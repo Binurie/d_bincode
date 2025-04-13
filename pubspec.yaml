@@ -1,0 +1,26 @@
+name: d_bincode
+description: >
+  A bincode like serialization library for Dart. Provides fast, deterministic encoding for binary data structures, mirroring the bincode specification (Rust) minimalistically.
+version: 1.0.0
+license: 'MIT'
+
+homepage: https://github.com/Binurie/d_bincode
+repository: https://github.com/Binurie/d_bincode
+issue_tracker: https://github.com/Binurie/d_bincode/issues
+documentation: https://github.com/Binurie/d_bincode#readme
+topics:
+  - serialization
+  - bincode
+  - binary
+  - dart
+publish_to: https://pub.dev
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  euc: ^1.0.6+8
+
+dev_dependencies:
+  test: ^1.25.15
+
