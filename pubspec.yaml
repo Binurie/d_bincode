@@ -13,7 +13,6 @@ topics:
   - bincode
   - binary
   - dart
-publish_to: https://pub.dev
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
