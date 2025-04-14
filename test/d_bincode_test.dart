@@ -156,7 +156,7 @@ void optionEncodingSpecTest() {
       "Option None encoding failed. Expected: ${noneExpected.join(',')}, got: ${noneWriter.toBytes().join(',')}");
 }
 
-/// --- 3. Collection Encoding (Vec<T> with u64 length prefix) ---
+/// --- 3. Collection Encoding (Vec<>) with u64 length prefix) ---
 void collectionEncodingSpecTest() {
   // === Part 1: test Vec<u8> encoding ===
   final writer1 = BincodeWriter();
@@ -267,7 +267,7 @@ void emptyStringEncodingTest() {
 }
 
 /// --- 8. Empty List Encoding ---
-/// Tests Vec<u8> where the list is empty.
+/// Tests Vec u8 where the list is empty.
 void emptyVecEncodingTest() {
   final writer = BincodeWriter();
   writer.writeU64(0); // length 0
@@ -324,7 +324,7 @@ void floatPrecisionTest() {
       reason: 'Float32 precision too low');
 }
 
-/// --- 12. Map Encoding (Map<u8, u32>) ---
+/// --- 12. Map Encoding (Map u8, u32 ) ---
 void mapEncodingTest() {
   final writer = BincodeWriter();
   final map = {1: 100, 2: 200};
