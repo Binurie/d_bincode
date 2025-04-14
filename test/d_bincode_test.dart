@@ -34,9 +34,19 @@ void main() {
     test('Reader seek(offset) behavior', cursorSeekReaderTest);
     test('Read/Write Int & Uint Lists', intAndUintListTests);
     test('Read/Write Float32List & Float64List', floatListTests);
+    test('write then read everything', completeReadWriteIntegrationTest);
+    test('Nested Encoding (writeNested/readNested)',
+        nestedEncodingWithNewMethodsTest);
+    test('Optional Nested Encoding (writeOptionNested/readOptionNested)',
+        optionalNestedNoneTest);
+    test('Login Protocol Roundtrip (real-world use)',
+        loginProtocolRoundtripTest);
+    test(
+        'IPC Protocol Roundtrip (realistic message passing)', ipcRoundtripTest);
+    test('IPC Entity Snapshot roundtrip (client-server simulation)',
+        entitySnapshotIpcTest);
   });
 }
-
 
 /// --- Class Encoding Example ---
 /// Simulates the equivalent of this Rust struct:
@@ -47,26 +57,33 @@ void main() {
 ///     label: [u8; 8]  // fixed-size string padded to 8 bytes
 /// }
 /// ```
-class ExampleData extends BincodeEncodable {
-  final int id;
-  final double value;
-  final String label; // Will be padded to 8 bytes
+class ExampleData implements BincodeEncodable, BincodeDecodable {
+  int id;
+  double value;
+  String label;
 
   ExampleData(this.id, this.value, this.label);
 
+  ExampleData.empty()
+      : id = 0,
+        value = 0.0,
+        label = '';
+
   @override
-  void writeBincode(BincodeBuilder writer) {
-    writer.writeU32(id); // 4 bytes
-    writer.writeF32(value); // 4 bytes
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeU32(id);
+    writer.writeF32(value);
     writer.writeFixedString(label, 8);
+    return writer.toBytes();
   }
 
-  factory ExampleData.fromBincode(Uint8List bytes) {
+  @override
+  void loadFromBytes(Uint8List bytes) {
     final reader = BincodeReader(bytes);
-    final id = reader.readU32();
-    final value = reader.readF32();
-    final label = reader.readFixedString(8).replaceAll('\x00', '');
-    return ExampleData(id, value, label);
+    id = reader.readU32();
+    value = reader.readF32();
+    label = reader.readFixedString(8).replaceAll('\x00', '');
   }
 
   @override
@@ -79,26 +96,29 @@ void classEncodingSpecTest() {
 
   final encoded = data.toBincode();
 
-  // Rust bincode reference output:
+  // Expected encoding:
   // u32: 123 -> [123, 0, 0, 0]
-  // f32: 1.5f32 -> [0, 0, 192, 63]
+  // f32: 1.5 -> [0, 0, 192, 63]
   // fixed string "Test" padded to 8 bytes -> [84, 101, 115, 116, 0, 0, 0, 0]
   final expected = Uint8List.fromList(
-      [123, 0, 0, 0, 0, 0, 192, 63, 84, 101, 115, 116, 0, 0, 0, 0]);
+    [123, 0, 0, 0, 0, 0, 192, 63, 84, 101, 115, 116, 0, 0, 0, 0],
+  );
 
   print("ExampleData encoding: $encoded");
-  assert(encoded.join(',') == expected.join(','),
-      "Class encoding failed. Expected: ${expected.join(',')}, got: ${encoded.join(',')}");
 
-  final decoded = ExampleData.fromBincode(encoded);
+  expect(encoded, equals(expected),
+      reason: "Encoded bytes don't match expected format");
+
+  // Decode using the empty constructor + instance method
+  final decoded = ExampleData.empty();
+  decoded.loadFromBytes(encoded);
+
   print("Decoded: $decoded");
 
-  assert(decoded.id == 123,
-      "Decoded id mismatch. Expected 123, got ${decoded.id}");
-  assert(decoded.value.toStringAsFixed(2) == '1.50',
-      "Decoded value mismatch. Expected 1.50, got ${decoded.value}");
-  assert(decoded.label == 'Test',
-      "Decoded label mismatch. Expected 'Test', got '${decoded.label}'");
+  expect(decoded.id, equals(123), reason: "ID mismatch");
+  expect(decoded.value.toStringAsFixed(2), equals('1.50'),
+      reason: "Float mismatch");
+  expect(decoded.label, equals('Test'), reason: "Label mismatch");
 }
 
 /// --- 1. Verify Fixint Struct Compatibility (u32 + i32, 8 bytes total) ---
@@ -326,42 +346,67 @@ void mapEncodingTest() {
 }
 
 /// --- 13. Nested Struct Encoding ---
-class InnerData extends BincodeEncodable {
-  final int code;
+
+/// --- 13. Nested Struct Encoding ---
+
+class InnerData implements BincodeEncodable, BincodeDecodable {
+  int code;
+
   InnerData(this.code);
 
   @override
-  void writeBincode(BincodeBuilder writer) => writer.writeU32(code);
-  factory InnerData.fromReader(BincodeReader reader) =>
-      InnerData(reader.readU32());
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    _writeTo(writer);
+    return writer.toBytes();
+  }
+
+  @override
+  void loadFromBytes(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    _readFrom(reader);
+  }
+
+  void _writeTo(BincodeWriter writer) {
+    writer.writeU32(code);
+  }
+
+  void _readFrom(BincodeReader reader) {
+    code = reader.readU32();
+  }
 }
 
-class OuterData extends BincodeEncodable {
-  final InnerData inner;
-  final double value;
+class OuterData implements BincodeEncodable, BincodeDecodable {
+  InnerData inner;
+  double value;
 
   OuterData(this.inner, this.value);
 
   @override
-  void writeBincode(BincodeBuilder writer) {
-    inner.writeBincode(writer);
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    inner._writeTo(writer);
     writer.writeF32(value);
+    return writer.toBytes();
   }
 
-  factory OuterData.fromBincode(Uint8List bytes) {
+  @override
+  void loadFromBytes(Uint8List bytes) {
     final reader = BincodeReader(bytes);
-    final inner = InnerData.fromReader(reader);
-    final value = reader.readF32();
-    return OuterData(inner, value);
+    inner = InnerData(0);
+    inner._readFrom(reader);
+    value = reader.readF32();
   }
 }
 
 void nestedStructTest() {
   final outer = OuterData(InnerData(777), 3.14);
   final encoded = outer.toBincode();
-  final decoded = OuterData.fromBincode(encoded);
+
+  final decoded = OuterData(InnerData(0), 0.0)..loadFromBytes(encoded);
 
   print("Nested struct: ${decoded.inner.code}, ${decoded.value}");
+
   expect(decoded.inner.code, equals(777));
   expect((decoded.value - 3.14).abs() < 1e-6, isTrue);
 }
@@ -423,7 +468,9 @@ void largeVectorStressTest() {
   final values = List<int>.generate(1000, (i) => i % 256);
   final writer = BincodeWriter();
   writer.writeU64(values.length);
-  for (final v in values) writer.writeU8(v);
+  for (final v in values) {
+    writer.writeU8(v);
+  }
 
   final bytes = writer.toBytes();
   final reader = BincodeReader(bytes);
@@ -531,15 +578,18 @@ void cursorPositioningWriterTest() {
 
   writer.rewind();
   print("Writer position after rewind(): ${writer.position}");
-  expect(writer.position, equals(0), reason: "Writer rewind() should reset to 0");
+  expect(writer.position, equals(0),
+      reason: "Writer rewind() should reset to 0");
 
   writer.seekTo(2);
   print("Writer position after seekTo(2): ${writer.position}");
-  expect(writer.position, equals(2), reason: "Writer seekTo(2) should move to 2");
+  expect(writer.position, equals(2),
+      reason: "Writer seekTo(2) should move to 2");
 
   writer.skipToEnd();
   print("Writer position after skipToEnd(): ${writer.position}");
-  expect(writer.position, equals(3), reason: "Writer skipToEnd() should restore to end");
+  expect(writer.position, equals(3),
+      reason: "Writer skipToEnd() should restore to end");
 }
 
 void cursorPositioningReaderTest() {
@@ -586,18 +636,19 @@ void cursorSeekWriterTest() {
 
   writer.seek(-1); // move back one byte
   print("Writer position after seek(-1): ${writer.position}");
-  expect(writer.position, equals(2), reason: "Writer should be at position 2 after seek(-1)");
+  expect(writer.position, equals(2),
+      reason: "Writer should be at position 2 after seek(-1)");
 
   writer.writeU8(99); // overwrite last byte
   final result = writer.toBytes();
   print("Bytes after overwriting at pos 2: $result");
-  expect(result[2], equals(99), reason: "Byte at position 2 should be overwritten to 99");
+  expect(result[2], equals(99),
+      reason: "Byte at position 2 should be overwritten to 99");
 
   writer.seek(-2); // move to position 1
   print("Writer position after seek(-2): ${writer.position}");
   expect(writer.position, equals(1), reason: "Writer at pos 1 after seek(-2)");
 }
-
 
 void cursorSeekReaderTest() {
   final writer = BincodeWriter();
@@ -681,4 +732,428 @@ void floatListTests() {
     expect((decodedF64[i] - f64List[i]).abs() < 1e-10, isTrue,
         reason: 'F64 mismatch at index $i');
   }
+}
+
+void completeReadWriteIntegrationTest() {
+  final writer = BincodeWriter();
+
+  // --- Write Primitive Values ---
+  writer.writeU8(255); // max u8
+  writer.writeU16(65535); // max u16
+  writer.writeU32(4294967295); // max u32
+  writer.writeU64(1234567890123456789);
+  writer.writeI8(-128);
+  writer.writeI16(-32768);
+  writer.writeI32(-2147483648);
+  writer.writeI64(-9223372036854775808);
+  writer.writeF32(3.14159);
+  writer.writeF64(-2.718281828459045);
+  writer.writeBool(true);
+  writer.writeBool(false);
+
+  // --- Write Strings ---
+  writer.writeString("Hello, world!"); // length-prefixed UTF-8 string
+  writer.writeFixedString("Dart", 10); // fixed-length; "Dart" padded with zeros
+  writer.writeFixedString("Dart", 10); // fixed-length; "Dart" padded with zeros
+
+  // --- Write Optionals ---
+  writer.writeOptionU8(100); // Option: Some(100)
+  writer.writeOptionU8(null); // Option: None
+  writer.writeOptionF64(6.28318); // Option: Some(6.28318)
+  writer.writeOptionF64(null); // Option: None
+
+  // Option F32 Triple (Some)
+  writer.writeOptionF32Triple(Float32List.fromList([1.0, 2.0, 3.0]));
+  // Option F32 Triple (None)
+  writer.writeOptionF32Triple(null);
+
+  // --- Write Collections ---
+  // Write a List<int> (using u8 for each element)
+  writer.writeList<int>([1, 2, 3, 4, 5], (int v) => writer.writeU8(v));
+  // Write a Map<int, String> (key: u8 and value: string)
+  writer.writeMap<int, String>(
+      {1: "one", 2: "two"},
+      (int key) => writer.writeU8(key),
+      (String value) => writer.writeString(value));
+
+  // --- Write Numeric Lists ---
+  writer.writeInt16List([-1, -2, -3]);
+  writer.writeFloat32List([0.1, 0.2, 0.3]);
+
+  final bytes = writer.toBytes();
+
+  final reader = BincodeReader(bytes);
+
+  // Verify primitives.
+  expect(reader.readU8(), equals(255));
+  expect(reader.readU16(), equals(65535));
+  expect(reader.readU32(), equals(4294967295));
+  expect(reader.readU64(), equals(1234567890123456789));
+  expect(reader.readI8(), equals(-128));
+  expect(reader.readI16(), equals(-32768));
+  expect(reader.readI32(), equals(-2147483648));
+  expect(reader.readI64(), equals(-9223372036854775808));
+  expect(reader.readF32(), closeTo(3.14159, 1e-5));
+  expect(reader.readF64(), closeTo(-2.718281828459045, 1e-12));
+  expect(reader.readBool(), isTrue);
+  expect(reader.readBool(), isFalse);
+
+  // Verify strings.
+  expect(reader.readString(), equals("Hello, world!"));
+
+  expect(reader.readFixedString(10), equals("Dart${"\x00" * 6}"));
+  expect(reader.readCleanFixedString(10), equals("Dart"));
+
+  // Verify optionals.
+  expect(reader.readOptionU8(), equals(100));
+  expect(reader.readOptionU8(), isNull);
+  expect(reader.readOptionF64(), closeTo(6.28318, 1e-12));
+  expect(reader.readOptionF64(), isNull);
+
+  // Verify Option F32 Triple.
+  final triple = reader.readOptionF32Triple();
+  expect(triple, isNotNull);
+  expect(triple!.toList(), equals([1.0, 2.0, 3.0]));
+  expect(reader.readOptionF32Triple(), isNull);
+
+  // Verify collections.
+  final listRead = reader.readList(() => reader.readU8());
+  expect(listRead, equals([1, 2, 3, 4, 5]));
+
+  final mapRead =
+      reader.readMap(() => reader.readU8(), () => reader.readString());
+  expect(mapRead, equals({1: "one", 2: "two"}));
+
+  // Verify numeric lists.
+  expect(reader.readInt16List(3), equals([-1, -2, -3]));
+  final floatList = reader.readFloat32List(3);
+  for (int i = 0; i < floatList.length; i++) {
+    expect(floatList[i], closeTo([0.1, 0.2, 0.3][i], 1e-5));
+  }
+
+  // verify that the complete byte buffer length matches the writer output.
+  expect(bytes.length, greaterThan(0));
+}
+
+class NestedValue implements BincodeEncodable, BincodeDecodable {
+  int number;
+
+  NestedValue(this.number);
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeU32(number);
+    return writer.toBytes();
+  }
+
+  @override
+  void loadFromBytes(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    number = reader.readU32();
+  }
+}
+
+class ComplexHolder implements BincodeEncodable, BincodeDecodable {
+  NestedValue value;
+  NestedValue? optional;
+
+  ComplexHolder(this.value, this.optional);
+
+  ComplexHolder.empty()
+      : value = NestedValue(0),
+        optional = null;
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeNested(value);
+    writer.writeOptionNested(optional);
+    return writer.toBytes();
+  }
+
+  @override
+  void loadFromBytes(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    value = reader.readNestedObject(NestedValue(0));
+    optional = reader.readOptionNestedObject(() => NestedValue(0));
+  }
+}
+
+void nestedEncodingWithNewMethodsTest() {
+  final instance = ComplexHolder(NestedValue(42), NestedValue(99));
+  final encoded = instance.toBincode();
+
+  print("Encoded ComplexHolder bytes: $encoded");
+
+  final decoded = ComplexHolder(NestedValue(0), null)..loadFromBytes(encoded);
+
+  expect(decoded.value.number, equals(42));
+  expect(decoded.optional, isNotNull);
+  expect(decoded.optional!.number, equals(99));
+}
+
+void optionalNestedNoneTest() {
+  final instance = ComplexHolder(NestedValue(1234), null);
+  final encoded = instance.toBincode();
+
+  final decoded = ComplexHolder(NestedValue(0), null)..loadFromBytes(encoded);
+
+  expect(decoded.value.number, equals(1234));
+  expect(decoded.optional, isNull);
+}
+
+class LoginRequest implements BincodeEncodable {
+  String username;
+  String password;
+
+  LoginRequest(this.username, this.password);
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeString(username);
+    writer.writeString(password);
+    return writer.toBytes();
+  }
+}
+
+class LoginResponse implements BincodeDecodable {
+  bool success;
+  String? token;
+
+  LoginResponse(this.success, this.token);
+
+  LoginResponse.empty()
+      : success = false,
+        token = null;
+
+  @override
+  void loadFromBytes(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    success = reader.readBool();
+    token = reader.readOptionString();
+  }
+
+  @override
+  String toString() => 'LoginResponse(success: $success, token: $token)';
+}
+
+void loginProtocolRoundtripTest() {
+  // CLIENT: Encode request to send to server
+  final request = LoginRequest("admin", "s3cr3t");
+  final sentBytes = request.toBincode();
+
+  // SERVER: Decode request on Rust-side (simulated in Dart here)
+  final reader = BincodeReader(sentBytes);
+  final receivedUsername = reader.readString();
+  final receivedPassword = reader.readString();
+
+  expect(receivedUsername, equals("admin"));
+  expect(receivedPassword, equals("s3cr3t"));
+
+  // SERVER: Create a LoginResponse
+  final responseWriter = BincodeWriter();
+  responseWriter.writeBool(true);
+  responseWriter.writeOptionString("auth-token-123");
+  final responseBytes = responseWriter.toBytes();
+
+  // CLIENT: Decode response
+  final response = LoginResponse.empty();
+  response.loadFromBytes(responseBytes);
+
+  print("Decoded LoginResponse: $response");
+
+  expect(response.success, isTrue);
+  expect(response.token, equals("auth-token-123"));
+}
+
+class IpcCommand implements BincodeEncodable, BincodeDecodable {
+  String command;
+  Map<String, String> args;
+
+  IpcCommand(this.command, this.args);
+
+  IpcCommand.empty()
+      : command = "",
+        args = {};
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    _writeTo(writer);
+    return writer.toBytes();
+  }
+
+  @override
+  void loadFromBytes(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    _readFrom(reader);
+  }
+
+  void _writeTo(BincodeWriter writer) {
+    writer.writeString(command);
+    writer.writeU64(args.length);
+    args.forEach((key, value) {
+      writer.writeString(key);
+      writer.writeString(value);
+    });
+  }
+
+  void _readFrom(BincodeReader reader) {
+    command = reader.readString();
+    final count = reader.readU64();
+    args = {};
+    for (int i = 0; i < count; i++) {
+      final key = reader.readString();
+      final val = reader.readString();
+      args[key] = val;
+    }
+  }
+}
+
+class IpcResponse implements BincodeEncodable, BincodeDecodable {
+  bool success;
+  String message;
+
+  IpcResponse(this.success, this.message);
+
+  IpcResponse.empty()
+      : success = false,
+        message = "";
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeBool(success);
+    writer.writeString(message);
+    return writer.toBytes();
+  }
+
+  @override
+  void loadFromBytes(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    success = reader.readBool();
+    message = reader.readString();
+  }
+
+  @override
+  String toString() => 'IpcResponse(success: $success, message: "$message")';
+}
+
+void ipcRoundtripTest() {
+  final ipc = IpcCommand("OpenFile", {
+    "path": "/tmp/data.txt",
+    "mode": "read",
+  });
+
+  final encoded = ipc.toBincode();
+
+  // SERVER SIDE: simulate handling the command
+  final reader = BincodeReader(encoded);
+  final cmd = reader.readString();
+  final argCount = reader.readU64();
+
+  final args = <String, String>{};
+  for (int i = 0; i < argCount; i++) {
+    final k = reader.readString();
+    final v = reader.readString();
+    args[k] = v;
+  }
+
+  expect(cmd, equals("OpenFile"));
+  expect(args["path"], equals("/tmp/data.txt"));
+  expect(args["mode"], equals("read"));
+
+  // SERVER RESPONDS
+  final responseWriter = BincodeWriter();
+  responseWriter.writeBool(true);
+  responseWriter.writeString("File opened successfully");
+
+  final responseBytes = responseWriter.toBytes();
+
+  // CLIENT SIDE
+  final response = IpcResponse.empty();
+  response.loadFromBytes(responseBytes);
+
+  print("IPC Response: $response");
+
+  expect(response.success, isTrue);
+  expect(response.message, contains("opened"));
+}
+
+class GameEntitySnapshot implements BincodeEncodable, BincodeDecodable {
+  int id;
+  double x;
+  double y;
+  double rotation;
+  String type;
+
+  GameEntitySnapshot(this.id, this.x, this.y, this.rotation, this.type);
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    _writeTo(writer);
+    return writer.toBytes();
+  }
+
+  @override
+  void loadFromBytes(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    _readFrom(reader);
+  }
+
+  void _writeTo(BincodeWriter writer) {
+    writer.writeU32(id);
+    writer.writeF32(x);
+    writer.writeF32(y);
+    writer.writeF32(rotation);
+    writer.writeString(type);
+  }
+
+  void _readFrom(BincodeReader reader) {
+    id = reader.readU32();
+    x = reader.readF32();
+    y = reader.readF32();
+    rotation = reader.readF32();
+    type = reader.readString();
+  }
+
+  @override
+  String toString() =>
+      'Entity(id: $id, pos: ($x, $y), rot: $rotation, type: "$type")';
+}
+
+Uint8List processEntityOnServer(Uint8List requestBytes) {
+  final entity = GameEntitySnapshot(0, 0.0, 0.0, 0.0, "");
+  entity.loadFromBytes(requestBytes);
+
+  final updated = GameEntitySnapshot(
+    entity.id,
+    entity.x.clamp(0.0, 100.0),
+    entity.y.clamp(0.0, 100.0),
+    (entity.rotation + 45.0) % 360.0,
+    "ServerConfirmed-${entity.type}",
+  );
+
+  return updated.toBincode();
+}
+
+void entitySnapshotIpcTest() {
+  final clientSnapshot = GameEntitySnapshot(1, 123.0, -20.0, 270.0, "Player");
+  final requestBytes = clientSnapshot.toBincode();
+
+  final responseBytes = processEntityOnServer(requestBytes);
+  final updatedSnapshot = GameEntitySnapshot(0, 0.0, 0.0, 0.0, "");
+  updatedSnapshot.loadFromBytes(responseBytes);
+
+  print("Client sent: $clientSnapshot");
+  print("Server replied: $updatedSnapshot");
+
+  expect(updatedSnapshot.id, equals(1));
+  expect(updatedSnapshot.x, equals(100.0));
+  expect(updatedSnapshot.y, equals(0.0));
+  expect(updatedSnapshot.rotation, equals(315.0));
+  expect(updatedSnapshot.type, equals("ServerConfirmed-Player"));
 }

@@ -9,12 +9,8 @@ library;
 
 export 'src/builder.dart';
 export 'src/byte_data_wrapper.dart';
-export 'src/debugging/debug_logger.dart';
-export 'src/debugging/debuggable_reader.dart';
-export 'src/debugging/debuggable_writer.dart';
-export 'src/encodable.dart';
+export 'src/codable.dart';
+export 'src/exception/exception.dart';
 export 'src/extensions/list_encoding_extension.dart';
-export 'src/fluent_reader.dart';
-export 'src/fluent_writer.dart';
 export 'src/reader.dart';
 export 'src/writer.dart';

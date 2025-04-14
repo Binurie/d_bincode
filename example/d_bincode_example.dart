@@ -2,228 +2,115 @@ import 'dart:typed_data';
 
 import 'package:d_bincode/d_bincode.dart';
 
-/// === ENUM: RoleType ===
-enum RoleType { guest, user, moderator, admin }
-
-/// === CLASS: Address (Nested Struct) ===
-class Address extends BincodeEncodable {
-  final String city;
-  final String zipCode;
-
-  Address(this.city, this.zipCode);
-
-  @override
-  void writeBincode(BincodeWriter writer) {
-    writer.writeString(city);
-    writer.writeString(zipCode);
-  }
-
-  factory Address.fromReader(BincodeReader reader) {
-    return Address(reader.readString(), reader.readString());
-  }
-
-  @override
-  String toString() => 'Address(city: "$city", zipCode: "$zipCode")';
+/// Enum representing user roles in the system.
+enum UserRole {
+  guest,
+  user,
+  admin,
 }
 
-/// === CLASS: UserProfile (Complex Struct) ===
-class UserProfile extends BincodeEncodable {
-  final int id;
-  final String name;
-  final bool isActive;
-  final RoleType role;
-  final double balance;
-  final Float32List? bonusVector;
-  final Address? address;
-  final List<int> loginTimestamps;
-  final String? nickname;
-  final double? rating;
+/// A nested class to demonstrate how to serialize/deserialize nested objects.
+class Profile implements BincodeEncodable, BincodeDecodable {
+  int age;
+  double rating;
 
-  UserProfile({
-    required this.id,
-    required this.name,
-    required this.isActive,
-    required this.role,
-    required this.balance,
-    this.bonusVector,
-    this.address,
-    required this.loginTimestamps,
-    this.nickname,
-    this.rating,
-  });
+  Profile(this.age, this.rating);
 
   @override
-  void writeBincode(BincodeWriter writer) {
-    writer.writeU32(id);
-    writer.writeString(name);
-    writer.writeBool(isActive);
-    writer.writeU32(role.index);
-    writer.writeF32(balance);
-    writer.writeOptionF32Triple(bonusVector);
-
-    writer.writeU8(address != null ? 1 : 0);
-    if (address != null) address!.writeBincode(writer);
-
-    writer.writeU32List(loginTimestamps);
-    writer.writeOptionString(nickname);
-    writer.writeOptionF32(rating);
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeU8(age);       // 1-byte unsigned age
+    writer.writeF64(rating);   // 8-byte float
+    return writer.toBytes();
   }
 
-  factory UserProfile.fromBincode(Uint8List bytes) {
+  @override
+  void loadFromBytes(Uint8List bytes) {
     final reader = BincodeReader(bytes);
-    final id = reader.readU32();
-    final name = reader.readString();
-    final isActive = reader.readBool();
-    final roleIndex = reader.readU32();
-    final balance = reader.readF32();
-    final bonusVec = reader.readOptionF32Triple();
-    Address? address;
-    if (reader.readU8() == 1) {
-      address = Address.fromReader(reader);
-    }
-    final timestamps = reader.readU32List();
-    final nickname = reader.readOptionString();
-    final rating = reader.readOptionF32();
+    age = reader.readU8();     // same order
+    rating = reader.readF64();
+  }
 
-    return UserProfile(
-      id: id,
-      name: name,
-      isActive: isActive,
-      role: RoleType.values[roleIndex],
-      balance: balance,
-      bonusVector: bonusVec,
-      address: address,
-      loginTimestamps: timestamps,
-      nickname: nickname,
-      rating: rating,
-    );
+  @override
+  String toString() => 'Profile(age: $age, rating: $rating)';
+}
+
+/// Demonstrates how to fully implement custom bincode serialization
+/// with enum, optional fields, and nested objects.
+class Example implements BincodeEncodable, BincodeDecodable {
+  int id;
+  String name;
+  UserRole role;
+  String? nickname;
+  Profile profile;
+
+  Example(this.id, this.name, this.role, this.nickname, this.profile);
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeU32(id);                      // 4-byte unsigned integer
+    writer.writeString(name);                 // UTF-8 with u64 length
+    writer.writeU8(role.index);               // enum index (compact: u8)
+    writer.writeOptionString(nickname);       // optional UTF-8 string
+    writer.writeNested(profile);              // nested Profile
+    return writer.toBytes();
+  }
+
+  @override
+  void loadFromBytes(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    id = reader.readU32();                    // same order
+    name = reader.readString();
+    role = UserRole.values[reader.readU8()];
+    nickname = reader.readOptionString();
+    profile = reader.readNestedObject(Profile(0, 0.0));
   }
 
   @override
   String toString() => '''
-UserProfile(
+Example(
   id: $id,
-  name: "$name",
-  active: $isActive,
+  name: $name,
   role: $role,
-  balance: $balance,
-  bonusVector: $bonusVector,
-  address: $address,
-  loginTimestamps: $loginTimestamps,
-  nickname: "$nickname",
-  rating: $rating
+  nickname: $nickname,
+  profile: $profile
 )''';
 }
 
-/// === CLASS: UserData (Simple Struct) ===
-class UserData extends BincodeEncodable {
-  final int userId;
-  final String username;
-  final double balance;
-  final List<int> loginTimestamps;
-
-  UserData(this.userId, this.username, this.balance, this.loginTimestamps);
-
-  @override
-  void writeBincode(BincodeWriter writer) {
-    writer.writeU32(userId);
-    writer.writeString(username);
-    writer.writeF32(balance);
-    writer.writeU32List(loginTimestamps);
-  }
-
-  factory UserData.fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    return UserData(
-      reader.readU32(),
-      reader.readString(),
-      reader.readF32(),
-      reader.readU32List(),
-    );
-  }
-
-  @override
-  String toString() =>
-      'UserData(userId: $userId, username: "$username", balance: $balance, loginTimestamps: $loginTimestamps)';
-}
-
 void main() {
-  /// === 1. Complex UserProfile Encoding/Decoding ===
-  final profile = UserProfile(
-    id: 101,
-    name: "DartVenger",
-    isActive: true,
-    role: RoleType.admin,
-    balance: 420.69,
-    bonusVector: Float32List.fromList([1.1, 2.2, 3.3]), // float precision 
-    address: Address("Flutterville", "90210"),
-    loginTimestamps: [1678880000, 1681234567],
-    nickname: "DV",
-    rating: 4.8,
+  final original = Example(
+    123,                       // id
+    "Alice",                   // name
+    UserRole.admin,            // role
+    "Ali",                     // optional nickname
+    Profile(30, 4.9),          // nested profile
   );
 
-  final profileBytes = profile.toBincode();
-  final decodedProfile = UserProfile.fromBincode(profileBytes);
+  final bytes = original.toBincode();
+  final decoded = Example(0, "", UserRole.guest, null, Profile(0, 0.0))
+    ..loadFromBytes(bytes);
 
-  print("=== Complex UserProfile ===");
-  print("Encoded: $profileBytes");
-  print("Decoded:\n$decodedProfile");
+  print("Encoded bytes: $bytes");
+  // Breakdown of bytes:
+  // [123, 0, 0, 0]                       // u32 id = 123
+  // [5, 0, 0, 0, 0, 0, 0, 0]             // u64 string length = 5 (name)
+  // [65, 108, 105, 99, 101]              // UTF-8 "Alice"
+  // [2]                                  // role.index = 2 (admin)
+  // [1]                                  // Option<String> present (nickname)
+  // [3, 0, 0, 0, 0, 0, 0, 0]             // u64 string length = 3 (nickname)
+  // [65, 108, 105]                       // UTF-8 "Ali"
+  // [9, 0, 0, 0, 0, 0, 0, 0]             // u64 length of nested profile = 9 bytes
+  // [30]                                 // u8 age = 30
+  // [154, 153, 153, 153, 153, 153, 19, 64] // f64 rating = 4.9
 
-  /// === 2. Simple UserData Example ===
-  final user = UserData(42, 'Eve_the_Hacker', 1337.50, [1678900000, 1680001234, 1680999999]);
-  final encoded = user.toBincode();
-  final decoded = UserData.fromBincode(encoded);
-
-  print("\n=== Simple UserData ===");
-  print("Encoded: $encoded");
   print("Decoded: $decoded");
 
-  /// === 3. Fluent API Example ===
-  final fluent = BincodeFluentBuilder()
-    .u32(7)
-    .strFix("FluentGuy", 12)
-    .f32(88.88)
-    .optF32(12.34)
-    .optF32(null)
-    .optU32(2024)
-    .optU32(null)
-    .optBool(true)
-    .optBool(null)
-    ..writeU32List([10, 20, 30]);
-
-  final fluentBytes = fluent.toBytes();
-  print("\n=== Fluent Encoded ===");
-  print("Encoded: $fluentBytes");
-
-  BincodeFluentReader(fluentBytes)
-    .u32((id) => print("→ ID: $id"))
-    .fixedStr(12, (name) => print("→ Name: $name"))
-    .f32((bal) => print("→ Balance: $bal"))
-    .optF32((bonus) => print("→ Optional Bonus: $bonus"))
-    .optF32((none) => print("→ Optional Bonus (null): $none"))
-    .optU32((year) => print("→ Optional Year: $year"))
-    .optU32((none) => print("→ Optional Year (null): $none"))
-    .optBool((flag) => print("→ Optional Active: $flag"))
-    .optBool((none) => print("→ Optional Active (null): $none"))
-    .u32List((list) => print("→ Login timestamps: $list"));
-
-  /// === 4. Debuggable Writer & Reader ===
-  final debugWriter = DebuggableBincodeWriter()
-    ..writeU32(9001)
-    ..writeFixedString("DebugHero", 16)
-    ..writeBool(false)
-    ..writeOptionF64(3.14159265)
-    ..writeOptionString("optional string")
-    ..writeOptionBool(null);
-
-  final debugBytes = debugWriter.toBytes();
-  final debugReader = DebuggableBincodeReader(debugBytes);
-
-  print("\n=== Debuggable Output ===");
-  print("→ ID: ${debugReader.readU32()}");
-  print("→ Name: ${debugReader.readFixedString(16)}");
-  print("→ Admin Flag: ${debugReader.readBool()}");
-  print("→ Pi Value: ${debugReader.readOptionF64()}");
-  print("→ Optional String: ${debugReader.readOptionString()}");
-  print("→ Optional Flag: ${debugReader.readOptionBool()}");
+//   Decoded: Example(
+//   id: 123,
+//   name: Alice,
+//   role: UserRole.admin,
+//   nickname: Ali,
+//   profile: Profile(age: 30, rating: 4.9)
+// )
 }
