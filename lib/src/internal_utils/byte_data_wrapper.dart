@@ -7,23 +7,12 @@
 #################################################################
 */
 
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:euc/jis.dart';
+import 'package:d_bincode/src/enums.dart';
 
-/// Supported string encodings for bincode serialization/deserialization.
-enum StringEncoding {
-  /// UTF‑8 encoding.
-  utf8,
-
-  /// UTF‑16 encoding.
-  utf16,
-
-  /// Shift-JIS encoding.
-  shiftJis,
-}
+import 'utils.dart';
 
 /// A wrapper around [ByteBuffer] which provides convenience methods for reading
 /// and writing various types in a binary format. This wrapper supports both reading
@@ -88,7 +77,7 @@ base class ByteDataWrapper {
       var buffer = await File(path).readAsBytes();
       return ByteDataWrapper(buffer.buffer);
     } else {
-      print("File is over 2GB, loading in chunks");
+      // File is over 2GB, loading in chunks
       var buffer = Uint8List(fileSize).buffer;
       var file = File(path).openRead();
       int position = 0;
@@ -101,7 +90,6 @@ base class ByteDataWrapper {
         }
         i++;
       }
-      print("Read $position bytes");
       return ByteDataWrapper(buffer);
     }
   }
@@ -333,7 +321,8 @@ base class ByteDataWrapper {
   ///
   /// For UTF‑16 encoding, [length] should be the number of bytes, and half
   /// of that will be read as 16‑bit values.
-  String readString(int length, {StringEncoding encoding = StringEncoding.utf8}) {
+  String readString(int length,
+      {StringEncoding encoding = StringEncoding.utf8}) {
     List<int> bytes;
     if (encoding != StringEncoding.utf16) {
       bytes = readUint8List(length);
@@ -362,7 +351,8 @@ base class ByteDataWrapper {
   ///
   /// If [encoding] is UTF‑16, uses a dedicated method; otherwise, reads bytes until a zero byte is found.
   /// Optionally, an [errorFallback] string can be provided, which is returned in case of decoding errors.
-  String readStringZeroTerminated({StringEncoding encoding = StringEncoding.utf8, String? errorFallback}) {
+  String readStringZeroTerminated(
+      {StringEncoding encoding = StringEncoding.utf8, String? errorFallback}) {
     if (encoding == StringEncoding.utf16) {
       return _readStringZeroTerminatedUtf16();
     }
@@ -387,7 +377,8 @@ base class ByteDataWrapper {
   ///
   /// Returns a new [ByteDataWrapper] that reflects that slice of the original buffer.
   ByteDataWrapper makeSubView(int length) {
-    return ByteDataWrapper(buffer, endian: endian, parentOffset: _position, length: length);
+    return ByteDataWrapper(buffer,
+        endian: endian, parentOffset: _position, length: length);
   }
 
   // --- Writing Methods (Direct access) ---
@@ -476,7 +467,8 @@ base class ByteDataWrapper {
   ///
   /// The method encodes the string into bytes, then writes a 64‑bit length prefix
   /// followed by the encoded bytes.
-  void writeString(String value, [StringEncoding encoding = StringEncoding.utf8]) {
+  void writeString(String value,
+      [StringEncoding encoding = StringEncoding.utf8]) {
     var codes = encodeString(value, encoding);
     if (encoding == StringEncoding.utf16) {
       for (var code in codes) {
@@ -494,7 +486,8 @@ base class ByteDataWrapper {
   /// Writes a null‑terminated string.
   ///
   /// Appends a null character to [value] then writes it using the specified [encoding].
-  void writeString0P(String value, [StringEncoding encoding = StringEncoding.utf8]) {
+  void writeString0P(String value,
+      [StringEncoding encoding = StringEncoding.utf8]) {
     writeString("$value\x00", encoding);
   }
 
@@ -506,37 +499,5 @@ base class ByteDataWrapper {
       _data.setUint8(_position, byte);
       _position += 1;
     }
-  }
-}
-
-/// Decodes a list of integer [codes] into a string using the specified [encoding].
-///
-/// For UTF‑8, uses [utf8.decode] with malformed sequences allowed.
-/// For UTF‑16, converts character codes directly.
-/// For Shift‑JIS, uses the [ShiftJIS] decoder from the 'euc' package.
-String decodeString(List<int> codes, StringEncoding encoding) {
-  switch (encoding) {
-    case StringEncoding.utf8:
-      return utf8.decode(codes, allowMalformed: true);
-    case StringEncoding.utf16:
-      return String.fromCharCodes(codes);
-    case StringEncoding.shiftJis:
-      return ShiftJIS().decode(codes);
-  }
-}
-
-/// Encodes a string [str] into a list of integers using the specified [encoding].
-///
-/// For UTF‑8, returns the UTF‑8 encoded bytes.
-/// For UTF‑16, returns the character codes.
-/// For Shift‑JIS, uses the [ShiftJIS] encoder from the 'euc' package.
-List<int> encodeString(String str, StringEncoding encoding) {
-  switch (encoding) {
-    case StringEncoding.utf8:
-      return utf8.encode(str);
-    case StringEncoding.utf16:
-      return str.codeUnits;
-    case StringEncoding.shiftJis:
-      return ShiftJIS().encode(str);
   }
 }

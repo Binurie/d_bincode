@@ -7,17 +7,28 @@
 
 import 'dart:typed_data';
 
+/// A interface combining [BincodeEncodable] and [BincodeDecodable].
+///
+/// Implement this interface for types requiring full round-trip serialization
+/// and deserialization using the Bincode standard format.
+abstract class BincodeCodable implements BincodeEncodable, BincodeDecodable {}
 
-/// An interface for types that can be encoded into bincode format.
+/// Defines the contract for types that can be serialized into the Bincode standard format.
 abstract class BincodeEncodable {
-  /// Serializes the object into a bincode-formatted [Uint8List].
+  /// Serializes the current state of the object into a bincode-formatted [Uint8List].
+  /// Implementations **must** use a [BincodeWriter] and write data fields
+  /// in the **exact same sequence and type** as reading by the corresponding
+  /// [BincodeDecodable.fromBincode] method or Object send from other cross platform languages.
   Uint8List toBincode();
 }
 
-/// An interface for types that can be decoded (loaded) from bincode format.
+/// Defines the contract for types whose state can be populated by deserializing
+/// data from the Bincode standard format.
 abstract class BincodeDecodable {
-  /// Populates the object with data from the provided bincode-formatted [bytes].
+  /// Populates the object's state from the provided bincode-formatted standard [bytes].
   ///
-  /// Implementations should read the data in the same order as was written.
-  void loadFromBytes(Uint8List bytes);
+  /// Implementations **must** use a [BincodeReader] and read data fields
+  /// in the **exact same sequence and type** as written by the corresponding
+  /// [BincodeEncodable.toBincode] method or Object send from other cross platform languages.
+  void fromBincode(Uint8List bytes);
 }

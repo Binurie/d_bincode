@@ -80,7 +80,8 @@ abstract class BincodeWriterBuilder {
   /// The method first writes the length of the encoded string as an unsigned 64‑bit integer,
   /// followed by the encoded bytes.
   /// The default [encoding] is UTF‑8.
-  void writeString(String value, [StringEncoding encoding = StringEncoding.utf8]);
+  void writeString(String value,
+      [StringEncoding encoding = StringEncoding.utf8]);
 
   /// Writes a fixed‑length string [value], padding with zeros if necessary.
   ///
@@ -133,7 +134,8 @@ abstract class BincodeWriterBuilder {
   /// Writes an optional string [value] using the specified [encoding].
   ///
   /// Writes a tag (1 for Some, 0 for None) followed by the string (if present).
-  void writeOptionString(String? value, [StringEncoding encoding = StringEncoding.utf8]);
+  void writeOptionString(String? value,
+      [StringEncoding encoding = StringEncoding.utf8]);
 
   /// Writes an optional fixed‑length string [value] of given [length].
   void writeOptionFixedString(String? value, int length);
@@ -148,7 +150,8 @@ abstract class BincodeWriterBuilder {
   /// Writes a map [values] by first writing its length (as a u64) followed by each key/value pair.
   ///
   /// The [writeKey] and [writeValue] callbacks are used to serialize the keys and values.
-  void writeMap<K, V>(Map<K, V> values, void Function(K key) writeKey, void Function(V value) writeValue);
+  void writeMap<K, V>(Map<K, V> values, void Function(K key) writeKey,
+      void Function(V value) writeValue);
 
   // -- Primitive List Helper Methods --
 
@@ -202,7 +205,6 @@ abstract class BincodeWriterBuilder {
   /// Returns the written portion of the buffer as a [Uint8List].
   Uint8List toBytes();
 }
-
 
 /// Abstract interface for reading bincode‐formatted data.
 ///
@@ -279,6 +281,9 @@ abstract class BincodeReaderBuilder {
 
   /// Reads [count] bytes from the current position and returns them as a [List<int>].
   List<int> readBytes(int count);
+
+  /// Reads [count] bytes and returns them as a Uint8List.
+  Uint8List readRawBytes(int count);
 
   /// Reads a length‑prefixed string using the specified [encoding].
   ///
@@ -368,50 +373,65 @@ abstract class BincodeReaderBuilder {
 
   // -- Primitive List Read Helper Methods --
 
-  /// Reads [length] signed 8‑bit integers from the stream.
-  List<int> readInt8List(int length);
+  /// Reads a sequence of signed 8-bit integers from the stream.
+  List<int> readInt8List();
 
-  /// Reads [length] signed 16‑bit integers from the stream.
-  List<int> readInt16List(int length);
+  /// Reads a sequence of signed 16-bit integers from the stream.
+  List<int> readInt16List();
 
-  /// Reads [length] signed 32‑bit integers from the stream.
-  List<int> readInt32List(int length);
+  /// Reads a sequence of signed 32-bit integers from the stream.
+  List<int> readInt32List();
 
-  /// Reads [length] signed 64‑bit integers from the stream.
-  List<int> readInt64List(int length);
+  /// Reads a sequence of signed 64-bit integers from the stream.
+  List<int> readInt64List();
 
-  /// Reads [length] unsigned 8‑bit integers from the stream.
-  List<int> readUint8List(int length);
+  /// Reads a sequence of unsigned 8-bit integers (bytes) from the stream.
+  List<int> readUint8List();
 
-  /// Reads [length] unsigned 16‑bit integers from the stream.
-  List<int> readUint16List(int length);
+  /// Reads a sequence of unsigned 16-bit integers from the stream.
+  List<int> readUint16List();
 
-  /// Reads [length] unsigned 32‑bit integers from the stream.
-  List<int> readUint32List(int length);
+  /// Reads a sequence of unsigned 32-bit integers from the stream.
+  List<int> readUint32List();
 
-  /// Reads [length] unsigned 64‑bit integers from the stream.
-  List<int> readUint64List(int length);
+  /// Reads a sequence of unsigned 64-bit integers from the stream.
+  List<int> readUint64List();
 
-  /// Reads [length] 32‑bit floating‑point numbers from the stream.
-  List<double> readFloat32List(int length);
+  /// Reads a sequence of 32-bit floating-point numbers from the stream.
+  List<double> readFloat32List();
 
-  /// Reads [length] 64‑bit floating‑point numbers from the stream.
-  List<double> readFloat64List(int length);
+  /// Reads a sequence of 64-bit floating-point numbers from the stream.
+  List<double> readFloat64List();
 
-  // -- Nested Object Reading --
+// -- Nested Object Reading --
 
-  /// Reads a nested object from the stream.
-  ///
-  /// First reads a 64‑bit length, then reads that many bytes,
-  /// and finally calls [instance.loadFromBytes] on the given [instance].
-  /// Returns the populated instance.
+  /// **Deprecated:** Use [readNestedObjectForCollection] or [readNestedObjectForFixed] instead.
+  @Deprecated(
+      'Use readNestedObjectForCollection or readNestedObjectForFixed instead')
   T readNestedObject<T extends BincodeDecodable>(T instance);
 
-  /// Reads an optional nested object from the stream.
-  ///
-  /// Returns `null` if the optional tag is 0.
-  /// If present, creates a new instance using [creator] and loads it from the bytes.
+  /// **Deprecated:** Use [readOptionNestedObjectForCollection] or [readOptionNestedObjectForFixed] instead.
+  @Deprecated(
+      'Use readOptionNestedObjectForCollection or readOptionNestedObjectForFixed instead')
   T? readOptionNestedObject<T extends BincodeDecodable>(T Function() creator);
+
+  /// Reads a nested object that was written with a length prefix (for collection elements).
+  T readNestedObjectForCollection<T extends BincodeDecodable>(T instance);
+
+  /// Reads a nested object that was written without a length prefix (for fixed-size objects).
+  /// Automatically determines byte size using the instance’s bincode encoding.
+  T readNestedObjectForFixed<T extends BincodeCodable>(T instance);
+
+  /// Reads an optional nested object that was written with a length prefix (for collection elements).
+  /// Returns null if the presence tag is 0.
+  T? readOptionNestedObjectForCollection<T extends BincodeDecodable>(
+      T Function() creator);
+
+  /// Reads an optional nested object that was written without a length prefix (for fixed-size objects).
+  /// Automatically determines byte size using a fresh encoded instance.
+  /// Returns null if the presence tag is 0.
+  T? readOptionNestedObjectForFixed<T extends BincodeCodable>(
+      T Function() creator);
 
   /// Returns the entire underlying byte buffer as a [Uint8List].
   Uint8List toBytes();

@@ -8,24 +8,13 @@ Can be used for cross-language communication like with rust [bincode](https://do
 
 ## Features
 
-- **Binary Encoding**  
-  Supports integers (`u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`), floats (`f32`, `f64`), booleans, UTF-8 and fixed-length strings.
-
-- **Optional Values**  
-  Encoded using a single tag byte: `0` (null), `1` (value present).
-
-- **Enums**  
-  Encoded as `u8` using index position.
-
-- **Nested Structures**  
-  Written with length-prefixed byte sections. writeNested,  writeOptionalNested, readNestedObject, readOptionalNestedObject
-
-- **Collections**  
-  Supports `List<T>` and `Map<K, V>` with length-prefixing.
-
-- **Manual Encoding**  
-  Custom Types must implement `BincodeEncodable` and `BincodeDecodable` for full control and use .
-
+- **Binary Encoding:** Supports integers (`u8`-`u64`, `i8`-`i64`), floats (`f32`, `f64`), booleans, and strings (UTF-8, fixed-length).
+- **Optional Values:** Encodes `Option<T>` types using a 1-byte tag (0=None, 1=Some) followed by the value if Some.
+- **Enums:** Encoded as `u8` based on their index.
+- **Nested Objects (Variable Size):** Handles objects requiring a length prefix (e.g., in `Vec<T>`). Uses `*ForCollection`.
+- **Nested Objects (Fixed Size):** Handles objects with a known fixed size without a per-object length prefix (e.g., embedded structs). Uses `*ForFixed`.
+- **Collections:** Supports `List<T>` and `Map<K, V>` with standard Bincode length-prefixing.
+- **Custom Types:** Require implementing `BincodeEncodable` (->), `BincodeDecodable` (<-), or `BincodeCodable` (<->).
 
 
 ## Getting Started
@@ -40,7 +29,7 @@ Add `d_bincode` as a dependency in your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  d_bincode: ^1.0.1
+  d_bincode: ^2.0.0
 ```
 
 Then run:
@@ -56,120 +45,85 @@ dart pub get
 
 
 ```dart
-// #### How to use d_bincode example ########
+/// Example data structure implementing BincodeCodable.
 
-/// Enum representing user roles in the system.
-enum UserRole {
-  guest,
-  user,
-  admin,
-}
+// For full encode decode you need to impl BincodeCodable. 
+class UserProfile implements BincodeCodable {
+  int userId = 0;
+  String username = '';
+  int? points;
+  List<String> tags = [];
 
-/// A nested class to demonstrate how to serialize/deserialize nested objects.
-class Profile implements BincodeEncodable, BincodeDecodable {
-  int age;
-  double rating;
+  UserProfile();
+  UserProfile.create(this.userId, this.username, this.points, this.tags);
 
-  Profile(this.age, this.rating);
-
+ // Create the impl for toBincode. The struct MUST match
+ // the other side's exact order and types definition
   @override
   Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeU8(age);       // 1-byte unsigned age
-    writer.writeF64(rating);   // 8-byte float
+    final writer = BincodeWriter(); // default writer settings
+    writer.writeU32(userId);
+    writer.writeString(username);
+    writer.writeOptionI32(points);
+    writer.writeList<String>(tags, (tag) => writer.writeString(tag));
     return writer.toBytes();
   }
 
+  // Create the impl for fromBincode. The struct MUST match
+  // the other side's exact order and types definition
   @override
-  void loadFromBytes(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    age = reader.readU8();     // same order
-    rating = reader.readF64();
+  void fromBincode(Uint8List bytes) {
+    final reader = BincodeReader(bytes); // default reader setting
+    userId = reader.readU32();
+    username = reader.readString();
+    points = reader.readOptionI32();
+    tags = reader.readList<String>(() => reader.readString());
   }
 
-  @override
-  String toString() => 'Profile(age: $age, rating: $rating)';
+   @override String toString() => 'User(id:$userId, name:"$username", pts:$points, tags:$tags)';
 }
 
-/// Demonstrates how to fully implement custom bincode serialization
-/// with enum, optional fields, and nested objects.
-class Example implements BincodeEncodable, BincodeDecodable {
-  int id;
-  String name;
-  UserRole role;
-  String? nickname;
-  Profile profile;
 
-  Example(this.id, this.name, this.role, this.nickname, this.profile);
-
-  @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeU32(id);                      // 4-byte unsigned integer
-    writer.writeString(name);                 // UTF-8 with u64 length
-    writer.writeU8(role.index);               // enum index (compact: u8)
-    writer.writeOptionString(nickname);       // optional UTF-8 string
-    writer.writeNested(profile);              // nested Profile
-    return writer.toBytes();
-  }
-
-  @override
-  void loadFromBytes(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    id = reader.readU32();                    // same order
-    name = reader.readString();
-    role = UserRole.values[reader.readU8()];
-    nickname = reader.readOptionString();
-    profile = reader.readNestedObject(Profile(0, 0.0));
-  }
-
-  @override
-  String toString() => '''
-Example(
-  id: $id,
-  name: $name,
-  role: $role,
-  nickname: $nickname,
-  profile: $profile
-)''';
-}
+// --- Example Usage ---
 
 void main() {
-  final original = Example(
-    123,                       // id
-    "Alice",                   // name
-    UserRole.admin,            // role
-    "Ali",                     // optional nickname
-    Profile(30, 4.9),          // nested profile
+
+  // 1. Create an instance
+  final profile = UserProfile.create(
+    101,
+    'BincoderDev',
+    2500,
+    ['dart', 'bincode'],
   );
+  print('Original: $profile');
 
-  final bytes = original.toBincode();
-  final decoded = Example(0, "", UserRole.guest, null, Profile(0, 0.0))
-    ..loadFromBytes(bytes);
+  // 2. Serialize
+  Uint8List encodedBytes;
+  encodedBytes = profile.toBincode();
+  print('Serialized: ${encodedBytes} bytes');
 
-  print("Encoded bytes: $bytes");
-  // Breakdown of bytes:
-  // [123, 0, 0, 0]                       // u32 id = 123
-  // [5, 0, 0, 0, 0, 0, 0, 0]             // u64 string length = 5 (name)
-  // [65, 108, 105, 99, 101]              // UTF-8 "Alice"
-  // [2]                                  // role.index = 2 (admin)
-  // [1]                                  // Option<String> present (nickname)
-  // [3, 0, 0, 0, 0, 0, 0, 0]             // u64 string length = 3 (nickname)
-  // [65, 108, 105]                       // UTF-8 "Ali"
-  // [9, 0, 0, 0, 0, 0, 0, 0]             // u64 length of nested profile = 9 bytes
-  // [30]                                 // u8 age = 30
-  // [154, 153, 153, 153, 153, 153, 19, 64] // f64 rating = 4.9
+  // --- Breakdown of Bytes ---
+  // [101, 0, 0, 0]                                       // U32 userId = 101
+  // [11, 0, 0, 0, 0, 0, 0, 0]                            // U64 username Length = 11
+  // [66, 105, 110, 99, 111, 100, 101, 114, 68, 101, 118] // "BincoderDev" (UTF-8 bytes)
+  // [1]                                                  // Option<i32> points = Some(1)
+  // [196, 9, 0, 0]                                       // I32 points Value = 2500 (Little Endian)
+  // [2, 0, 0, 0, 0, 0, 0, 0]                             // U64 tags list Length = 2
+  // [4, 0, 0, 0, 0, 0, 0, 0]                             // U64 tags[0] ("dart") Length = 4
+  // [100, 97, 114, 116]                                  // "dart" (UTF-8 bytes)
+  // [7, 0, 0, 0, 0, 0, 0, 0]                             // U64 tags[1] ("bincode") Length = 7
+  // [98, 105, 110, 99, 111, 100, 101]                    // "bincode" (UTF-8 bytes)
 
-  print("Decoded: $decoded");
+  // (encodedBytes can now be used, e.g., saved or sent like with encodedBytes.toFile)
 
-//   Decoded: Example(
-//   id: 123,
-//   name: Alice,
-//   role: UserRole.admin,
-//   nickname: Ali,
-//   profile: Profile(age: 30, rating: 4.9)
-// )
+  // 3. Deserialize
+  final decodedProfile = UserProfile();
+  decodedProfile.fromBincode(encodedBytes);
+  print('Decoded:  $decodedProfile');
+
+  // Decoded:  User(id:101, name:"BincoderDev", pts:2500, tags:[dart, bincode])
 }
+
 
 ```
 

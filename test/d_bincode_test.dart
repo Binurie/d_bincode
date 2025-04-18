@@ -45,6 +45,9 @@ void main() {
         'IPC Protocol Roundtrip (realistic message passing)', ipcRoundtripTest);
     test('IPC Entity Snapshot roundtrip (client-server simulation)',
         entitySnapshotIpcTest);
+    test('Crazy 4-Level Deep Nested Struct and List - Map Encoding',
+        ultraInsaneCrazyTest);
+    test('Deep Complex Test', deepComplexTest);
   });
 }
 
@@ -79,7 +82,7 @@ class ExampleData implements BincodeEncodable, BincodeDecodable {
   }
 
   @override
-  void loadFromBytes(Uint8List bytes) {
+  void fromBincode(Uint8List bytes) {
     final reader = BincodeReader(bytes);
     id = reader.readU32();
     value = reader.readF32();
@@ -111,7 +114,7 @@ void classEncodingSpecTest() {
 
   // Decode using the empty constructor + instance method
   final decoded = ExampleData.empty();
-  decoded.loadFromBytes(encoded);
+  decoded.fromBincode(encoded);
 
   print("Decoded: $decoded");
 
@@ -297,7 +300,7 @@ void optionF32TripleNullTest() {
   writer.writeOptionF32Triple(null);
 
   final bytes = writer.toBytes();
-  final expected = Uint8List.fromList([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  final expected = Uint8List.fromList([0]);
 
   print("OptionF32Triple (null): $bytes");
   expect(bytes, equals(expected));
@@ -362,7 +365,7 @@ class InnerData implements BincodeEncodable, BincodeDecodable {
   }
 
   @override
-  void loadFromBytes(Uint8List bytes) {
+  void fromBincode(Uint8List bytes) {
     final reader = BincodeReader(bytes);
     _readFrom(reader);
   }
@@ -391,7 +394,7 @@ class OuterData implements BincodeEncodable, BincodeDecodable {
   }
 
   @override
-  void loadFromBytes(Uint8List bytes) {
+  void fromBincode(Uint8List bytes) {
     final reader = BincodeReader(bytes);
     inner = InnerData(0);
     inner._readFrom(reader);
@@ -403,7 +406,7 @@ void nestedStructTest() {
   final outer = OuterData(InnerData(777), 3.14);
   final encoded = outer.toBincode();
 
-  final decoded = OuterData(InnerData(0), 0.0)..loadFromBytes(encoded);
+  final decoded = OuterData(InnerData(0), 0.0)..fromBincode(encoded);
 
   print("Nested struct: ${decoded.inner.code}, ${decoded.value}");
 
@@ -699,14 +702,14 @@ void intAndUintListTests() {
   final bytes = writer.toBytes();
   final reader = BincodeReader(bytes);
 
-  expect(reader.readInt8List(int8List.length), equals(int8List));
-  expect(reader.readInt16List(int16List.length), equals(int16List));
-  expect(reader.readInt32List(int32List.length), equals(int32List));
-  expect(reader.readInt64List(int64List.length), equals(int64List));
-  expect(reader.readUint8List(uint8List.length), equals(uint8List));
-  expect(reader.readUint16List(uint16List.length), equals(uint16List));
-  expect(reader.readUint32List(uint32List.length), equals(uint32List));
-  expect(reader.readUint64List(uint64List.length), equals(uint64List));
+  expect(reader.readInt8List(), equals(int8List));
+  expect(reader.readInt16List(), equals(int16List));
+  expect(reader.readInt32List(), equals(int32List));
+  expect(reader.readInt64List(), equals(int64List));
+  expect(reader.readUint8List(), equals(uint8List));
+  expect(reader.readUint16List(), equals(uint16List));
+  expect(reader.readUint32List(), equals(uint32List));
+  expect(reader.readUint64List(), equals(uint64List));
 }
 
 void floatListTests() {
@@ -720,16 +723,18 @@ void floatListTests() {
   final bytes = writer.toBytes();
   final reader = BincodeReader(bytes);
 
-  final decodedF32 = reader.readFloat32List(f32List.length);
-  final decodedF64 = reader.readFloat64List(f64List.length);
+  final decodedF32 = reader.readFloat32List();
+  final decodedF64 = reader.readFloat64List();
 
+  expect(decodedF32.length, equals(f32List.length));
   for (int i = 0; i < f32List.length; i++) {
-    expect((decodedF32[i] - f32List[i]).abs() < 1e-5, isTrue,
+    expect(decodedF32[i], closeTo(f32List[i], 1e-5),
         reason: 'F32 mismatch at index $i');
   }
 
+  expect(decodedF64.length, equals(f64List.length));
   for (int i = 0; i < f64List.length; i++) {
-    expect((decodedF64[i] - f64List[i]).abs() < 1e-10, isTrue,
+    expect(decodedF64[i], closeTo(f64List[i], 1e-10),
         reason: 'F64 mismatch at index $i');
   }
 }
@@ -738,9 +743,9 @@ void completeReadWriteIntegrationTest() {
   final writer = BincodeWriter();
 
   // --- Write Primitive Values ---
-  writer.writeU8(255); // max u8
-  writer.writeU16(65535); // max u16
-  writer.writeU32(4294967295); // max u32
+  writer.writeU8(255);
+  writer.writeU16(65535);
+  writer.writeU32(4294967295);
   writer.writeU64(1234567890123456789);
   writer.writeI8(-128);
   writer.writeI16(-32768);
@@ -752,25 +757,20 @@ void completeReadWriteIntegrationTest() {
   writer.writeBool(false);
 
   // --- Write Strings ---
-  writer.writeString("Hello, world!"); // length-prefixed UTF-8 string
-  writer.writeFixedString("Dart", 10); // fixed-length; "Dart" padded with zeros
-  writer.writeFixedString("Dart", 10); // fixed-length; "Dart" padded with zeros
+  writer.writeString("Hello, world!");
+  writer.writeFixedString("Dart", 10);
+  writer.writeFixedString("Dart", 10);
 
   // --- Write Optionals ---
-  writer.writeOptionU8(100); // Option: Some(100)
-  writer.writeOptionU8(null); // Option: None
-  writer.writeOptionF64(6.28318); // Option: Some(6.28318)
-  writer.writeOptionF64(null); // Option: None
-
-  // Option F32 Triple (Some)
+  writer.writeOptionU8(100);
+  writer.writeOptionU8(null);
+  writer.writeOptionF64(6.28318);
+  writer.writeOptionF64(null);
   writer.writeOptionF32Triple(Float32List.fromList([1.0, 2.0, 3.0]));
-  // Option F32 Triple (None)
   writer.writeOptionF32Triple(null);
 
   // --- Write Collections ---
-  // Write a List<int> (using u8 for each element)
   writer.writeList<int>([1, 2, 3, 4, 5], (int v) => writer.writeU8(v));
-  // Write a Map<int, String> (key: u8 and value: string)
   writer.writeMap<int, String>(
       {1: "one", 2: "two"},
       (int key) => writer.writeU8(key),
@@ -781,7 +781,6 @@ void completeReadWriteIntegrationTest() {
   writer.writeFloat32List([0.1, 0.2, 0.3]);
 
   final bytes = writer.toBytes();
-
   final reader = BincodeReader(bytes);
 
   // Verify primitives.
@@ -800,7 +799,6 @@ void completeReadWriteIntegrationTest() {
 
   // Verify strings.
   expect(reader.readString(), equals("Hello, world!"));
-
   expect(reader.readFixedString(10), equals("Dart${"\x00" * 6}"));
   expect(reader.readCleanFixedString(10), equals("Dart"));
 
@@ -809,8 +807,6 @@ void completeReadWriteIntegrationTest() {
   expect(reader.readOptionU8(), isNull);
   expect(reader.readOptionF64(), closeTo(6.28318, 1e-12));
   expect(reader.readOptionF64(), isNull);
-
-  // Verify Option F32 Triple.
   final triple = reader.readOptionF32Triple();
   expect(triple, isNotNull);
   expect(triple!.toList(), equals([1.0, 2.0, 3.0]));
@@ -819,23 +815,23 @@ void completeReadWriteIntegrationTest() {
   // Verify collections.
   final listRead = reader.readList(() => reader.readU8());
   expect(listRead, equals([1, 2, 3, 4, 5]));
-
   final mapRead =
       reader.readMap(() => reader.readU8(), () => reader.readString());
   expect(mapRead, equals({1: "one", 2: "two"}));
 
   // Verify numeric lists.
-  expect(reader.readInt16List(3), equals([-1, -2, -3]));
-  final floatList = reader.readFloat32List(3);
+  expect(reader.readInt16List(), equals([-1, -2, -3]));
+  final floatList = reader.readFloat32List();
+  expect(floatList.length, equals(3));
   for (int i = 0; i < floatList.length; i++) {
     expect(floatList[i], closeTo([0.1, 0.2, 0.3][i], 1e-5));
   }
 
-  // verify that the complete byte buffer length matches the writer output.
-  expect(bytes.length, greaterThan(0));
+  expect(reader.remainingBytes(), isZero,
+      reason: "Reader should be at end of buffer");
 }
 
-class NestedValue implements BincodeEncodable, BincodeDecodable {
+class NestedValue implements BincodeCodable {
   int number;
 
   NestedValue(this.number);
@@ -848,7 +844,7 @@ class NestedValue implements BincodeEncodable, BincodeDecodable {
   }
 
   @override
-  void loadFromBytes(Uint8List bytes) {
+  void fromBincode(Uint8List bytes) {
     final reader = BincodeReader(bytes);
     number = reader.readU32();
   }
@@ -859,7 +855,6 @@ class ComplexHolder implements BincodeEncodable, BincodeDecodable {
   NestedValue? optional;
 
   ComplexHolder(this.value, this.optional);
-
   ComplexHolder.empty()
       : value = NestedValue(0),
         optional = null;
@@ -867,26 +862,28 @@ class ComplexHolder implements BincodeEncodable, BincodeDecodable {
   @override
   Uint8List toBincode() {
     final writer = BincodeWriter();
-    writer.writeNested(value);
-    writer.writeOptionNested(optional);
+    writer.writeNestedValueForFixed(value);
+    writer.writeOptionNestedValueForFixed(optional);
     return writer.toBytes();
   }
 
   @override
-  void loadFromBytes(Uint8List bytes) {
+  void fromBincode(Uint8List bytes) {
     final reader = BincodeReader(bytes);
-    value = reader.readNestedObject(NestedValue(0));
-    optional = reader.readOptionNestedObject(() => NestedValue(0));
+
+    // ---- Decode the fixed‐size nested value (no length prefix) ----
+    value = reader.readNestedObjectForFixed(NestedValue(0));
+
+    // ---- Decode the optional fixed‐size nested (tag + raw bytes) ----
+    optional = reader.readOptionNestedObjectForFixed(() => NestedValue(0));
   }
 }
+// --- Test Cases ---
 
 void nestedEncodingWithNewMethodsTest() {
   final instance = ComplexHolder(NestedValue(42), NestedValue(99));
   final encoded = instance.toBincode();
-
-  print("Encoded ComplexHolder bytes: $encoded");
-
-  final decoded = ComplexHolder(NestedValue(0), null)..loadFromBytes(encoded);
+  final decoded = ComplexHolder.empty()..fromBincode(encoded);
 
   expect(decoded.value.number, equals(42));
   expect(decoded.optional, isNotNull);
@@ -897,8 +894,11 @@ void optionalNestedNoneTest() {
   final instance = ComplexHolder(NestedValue(1234), null);
   final encoded = instance.toBincode();
 
-  final decoded = ComplexHolder(NestedValue(0), null)..loadFromBytes(encoded);
+  // 4 bytes for `value` + 1 byte tag = 5 bytes
+  expect(encoded.length, equals(5),
+      reason: 'Optional none writes only a tag byte after the fixed nested');
 
+  final decoded = ComplexHolder.empty()..fromBincode(encoded);
   expect(decoded.value.number, equals(1234));
   expect(decoded.optional, isNull);
 }
@@ -929,7 +929,7 @@ class LoginResponse implements BincodeDecodable {
         token = null;
 
   @override
-  void loadFromBytes(Uint8List bytes) {
+  void fromBincode(Uint8List bytes) {
     final reader = BincodeReader(bytes);
     success = reader.readBool();
     token = reader.readOptionString();
@@ -960,7 +960,7 @@ void loginProtocolRoundtripTest() {
 
   // CLIENT: Decode response
   final response = LoginResponse.empty();
-  response.loadFromBytes(responseBytes);
+  response.fromBincode(responseBytes);
 
   print("Decoded LoginResponse: $response");
 
@@ -986,7 +986,7 @@ class IpcCommand implements BincodeEncodable, BincodeDecodable {
   }
 
   @override
-  void loadFromBytes(Uint8List bytes) {
+  void fromBincode(Uint8List bytes) {
     final reader = BincodeReader(bytes);
     _readFrom(reader);
   }
@@ -1031,7 +1031,7 @@ class IpcResponse implements BincodeEncodable, BincodeDecodable {
   }
 
   @override
-  void loadFromBytes(Uint8List bytes) {
+  void fromBincode(Uint8List bytes) {
     final reader = BincodeReader(bytes);
     success = reader.readBool();
     message = reader.readString();
@@ -1074,7 +1074,7 @@ void ipcRoundtripTest() {
 
   // CLIENT SIDE
   final response = IpcResponse.empty();
-  response.loadFromBytes(responseBytes);
+  response.fromBincode(responseBytes);
 
   print("IPC Response: $response");
 
@@ -1099,7 +1099,7 @@ class GameEntitySnapshot implements BincodeEncodable, BincodeDecodable {
   }
 
   @override
-  void loadFromBytes(Uint8List bytes) {
+  void fromBincode(Uint8List bytes) {
     final reader = BincodeReader(bytes);
     _readFrom(reader);
   }
@@ -1127,7 +1127,7 @@ class GameEntitySnapshot implements BincodeEncodable, BincodeDecodable {
 
 Uint8List processEntityOnServer(Uint8List requestBytes) {
   final entity = GameEntitySnapshot(0, 0.0, 0.0, 0.0, "");
-  entity.loadFromBytes(requestBytes);
+  entity.fromBincode(requestBytes);
 
   final updated = GameEntitySnapshot(
     entity.id,
@@ -1146,7 +1146,7 @@ void entitySnapshotIpcTest() {
 
   final responseBytes = processEntityOnServer(requestBytes);
   final updatedSnapshot = GameEntitySnapshot(0, 0.0, 0.0, 0.0, "");
-  updatedSnapshot.loadFromBytes(responseBytes);
+  updatedSnapshot.fromBincode(responseBytes);
 
   print("Client sent: $clientSnapshot");
   print("Server replied: $updatedSnapshot");
@@ -1156,4 +1156,436 @@ void entitySnapshotIpcTest() {
   expect(updatedSnapshot.y, equals(0.0));
   expect(updatedSnapshot.rotation, equals(315.0));
   expect(updatedSnapshot.type, equals("ServerConfirmed-Player"));
+}
+
+class Level4 implements BincodeCodable {
+  int value;
+
+  Level4(this.value);
+  Level4.empty() : value = 0;
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeU32(value);
+    return writer.toBytes();
+  }
+
+  @override
+  void fromBincode(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    value = reader.readU32();
+  }
+
+  @override
+  String toString() => 'Level4(value: $value)';
+}
+
+class Level3 implements BincodeCodable {
+  Level4 child;
+
+  Level3(this.child);
+  Level3.empty() : child = Level4.empty();
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeNestedValueForFixed(child);
+    return writer.toBytes();
+  }
+
+  @override
+  void fromBincode(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    child = reader.readNestedObjectForFixed(Level4.empty());
+  }
+
+  @override
+  String toString() => 'Level3($child)';
+}
+
+class Level2 implements BincodeCodable {
+  Level3 child;
+
+  Level2(this.child);
+  Level2.empty() : child = Level3.empty();
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeNestedValueForFixed(child);
+    return writer.toBytes();
+  }
+
+  @override
+  void fromBincode(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    child = reader.readNestedObjectForFixed(Level3.empty());
+  }
+
+  @override
+  String toString() => 'Level2($child)';
+}
+
+class Level1 implements BincodeCodable {
+  Level2 child;
+
+  Level1(this.child);
+  Level1.empty() : child = Level2.empty();
+
+  @override
+  Uint8List toBincode() {
+    final writer = BincodeWriter();
+    writer.writeNestedValueForFixed(child);
+    return writer.toBytes();
+  }
+
+  @override
+  void fromBincode(Uint8List bytes) {
+    final reader = BincodeReader(bytes);
+    child = reader.readNestedObjectForFixed(Level2.empty());
+  }
+
+  @override
+  String toString() => 'Level1($child)';
+}
+
+void ultraInsaneCrazyTest() {
+  final writer = BincodeWriter();
+
+  // 1) Mix of primitives
+  writer.writeU8(0xAA);
+  writer.writeU16(0x1234);
+  writer.writeU32(0xDEADBEEF);
+  writer.writeI32(-123456);
+  writer.writeF64(2.718281828);
+  writer.writeBool(true);
+
+  // 2) Strings & optionals
+  writer.writeString('Start');
+  writer.writeOptionString(null);
+  writer.writeOptionString('OptionHere');
+
+  // 3) Heterogeneous list: ints, strings, nested structs
+  final heterogeneous = <Object>[42, 'Answer', Level4(4242)];
+  writer.writeU64(heterogeneous.length);
+  for (final element in heterogeneous) {
+    if (element is int) {
+      writer.writeU8(0); // tag for int
+      writer.writeI32(element);
+    } else if (element is String) {
+      writer.writeU8(1); // tag for string
+      writer.writeString(element);
+    } else if (element is Level4) {
+      writer.writeU8(2); // tag for nested struct
+      writer.writeNestedValueForFixed(element);
+    }
+  }
+
+  // 4) Map from string to nested struct
+  final nestedMap = {
+    'first': Level1(Level2(Level3(Level4(1)))),
+    'second': Level1(Level2(Level3(Level4(2)))),
+  };
+  writer.writeMap<String, Level1>(
+    nestedMap,
+    (k) => writer.writeString(k),
+    (v) => writer.writeNestedValueForFixed(v),
+  );
+
+  // 5) Trailing marker
+  writer.writeString('END');
+
+  final bytes = writer.toBytes();
+  print('Ultra‑insane bytes: ${bytes.toList()}');
+
+  // --- Decode ---
+  final reader = BincodeReader(bytes);
+
+  // 1) Primitives
+  expect(reader.readU8(), equals(0xAA));
+  expect(reader.readU16(), equals(0x1234));
+  expect(reader.readU32(), equals(0xDEADBEEF));
+  expect(reader.readI32(), equals(-123456));
+  expect(reader.readF64(), closeTo(2.718281828, 1e-12));
+  expect(reader.readBool(), isTrue);
+
+  // 2) Strings & optionals
+  expect(reader.readString(), equals('Start'));
+  expect(reader.readOptionString(), isNull);
+  expect(reader.readOptionString(), equals('OptionHere'));
+
+  // 3) Heterogeneous list
+  final listLen = reader.readU64();
+  final decodedHetero = <Object>[];
+  for (var i = 0; i < listLen; i++) {
+    final tag = reader.readU8();
+    switch (tag) {
+      case 0:
+        decodedHetero.add(reader.readI32());
+        break;
+      case 1:
+        decodedHetero.add(reader.readString());
+        break;
+      case 2:
+        decodedHetero.add(reader.readNestedObjectForFixed(Level4.empty()));
+        break;
+      default:
+        fail('Unknown tag $tag');
+    }
+  }
+  expect(decodedHetero[0], equals(42));
+  expect(decodedHetero[1], equals('Answer'));
+  expect((decodedHetero[2] as Level4).value, equals(4242));
+
+  // 4) Map decode
+  final mapLen = reader.readU64();
+  final decodedMap = <String, Level1>{};
+  for (var i = 0; i < mapLen; i++) {
+    final key = reader.readString();
+    decodedMap[key] = reader.readNestedObjectForFixed(Level1.empty());
+  }
+  expect(decodedMap['first']!.child.child.child.value, equals(1));
+  expect(decodedMap['second']!.child.child.child.value, equals(2));
+
+  // 5) Trailing marker
+  expect(reader.readString(), equals('END'));
+}
+
+class Level4Ext implements BincodeCodable {
+  int value;
+  bool active;
+  List<double> metrics;
+  String name;
+
+  Level4Ext(this.value, this.active, this.metrics, this.name);
+  Level4Ext.empty()
+      : value = 0,
+        active = false,
+        metrics = [],
+        name = '';
+
+  @override
+  Uint8List toBincode() {
+    final w = BincodeWriter();
+    w.writeU32(value);
+    w.writeBool(active);
+    w.writeList<double>(metrics, (m) => w.writeF64(m));
+    w.writeString(name);
+    return w.toBytes();
+  }
+
+  @override
+  void fromBincode(Uint8List bytes) {
+    final r = BincodeReader(bytes);
+    value = r.readU32();
+    active = r.readBool();
+    metrics = r.readList(() => r.readF64());
+    name = r.readString();
+  }
+
+  @override
+  String toString() =>
+      'Level4Ext(value: $value, active: $active, metrics: $metrics, name: "$name")';
+}
+
+class Level3Ext implements BincodeCodable {
+  Level4Ext primary;
+  Level4Ext? optionalChild;
+  Map<String, Level4Ext> lookup;
+
+  Level3Ext(this.primary, this.optionalChild, this.lookup);
+  Level3Ext.empty()
+      : primary = Level4Ext.empty(),
+        optionalChild = null,
+        lookup = {};
+
+  @override
+  Uint8List toBincode() {
+    final w = BincodeWriter();
+    // length‑prefix the nested block
+    w.writeNestedValueForCollection(primary);
+    w.writeOptionNestedValueForCollection(optionalChild);
+    w.writeMap<String, Level4Ext>(
+      lookup,
+      (k) => w.writeString(k),
+      (v) => w.writeNestedValueForCollection(v),
+    );
+    return w.toBytes();
+  }
+
+  @override
+  void fromBincode(Uint8List bytes) {
+    final r = BincodeReader(bytes);
+    primary = r.readNestedObjectForCollection(Level4Ext.empty());
+    optionalChild =
+        r.readOptionNestedObjectForCollection(() => Level4Ext.empty());
+    lookup = r.readMap<String, Level4Ext>(
+      () => r.readString(),
+      () => r.readNestedObjectForCollection(Level4Ext.empty()),
+    );
+  }
+
+  @override
+  String toString() =>
+      'Level3Ext(primary: $primary, optionalChild: $optionalChild, lookup: $lookup)';
+}
+
+class Level2Ext implements BincodeCodable {
+  Level3Ext main;
+  List<Level3Ext> extras;
+  Level4Ext extraLeaf;
+
+  Level2Ext(this.main, this.extras, this.extraLeaf);
+  Level2Ext.empty()
+      : main = Level3Ext.empty(),
+        extras = [],
+        extraLeaf = Level4Ext.empty();
+
+  @override
+  Uint8List toBincode() {
+    final w = BincodeWriter();
+    w.writeNestedValueForCollection(main);
+    w.writeList<Level3Ext>(extras, (e) => w.writeNestedValueForCollection(e));
+    w.writeNestedValueForCollection(extraLeaf);
+    return w.toBytes();
+  }
+
+  @override
+  void fromBincode(Uint8List bytes) {
+    final r = BincodeReader(bytes);
+    main = r.readNestedObjectForCollection(Level3Ext.empty());
+    extras =
+        r.readList(() => r.readNestedObjectForCollection(Level3Ext.empty()));
+    extraLeaf = r.readNestedObjectForCollection(Level4Ext.empty());
+  }
+
+  @override
+  String toString() =>
+      'Level2Ext(main: $main, extras: $extras, extraLeaf: $extraLeaf)';
+}
+
+class Level1Ext implements BincodeCodable {
+  Level2Ext root;
+  Map<int, Level2Ext> registry;
+  List<String> tags;
+
+  Level1Ext(this.root, this.registry, this.tags);
+  Level1Ext.empty()
+      : root = Level2Ext.empty(),
+        registry = {},
+        tags = [];
+
+  @override
+  Uint8List toBincode() {
+    final w = BincodeWriter();
+    w.writeNestedValueForCollection(root);
+    w.writeMap<int, Level2Ext>(
+      registry,
+      (k) => w.writeU32(k),
+      (v) => w.writeNestedValueForCollection(v),
+    );
+    w.writeList<String>(tags, (t) => w.writeString(t));
+    return w.toBytes();
+  }
+
+  @override
+  void fromBincode(Uint8List bytes) {
+    final r = BincodeReader(bytes);
+    root = r.readNestedObjectForCollection(Level2Ext.empty());
+    registry = r.readMap<int, Level2Ext>(
+      () => r.readU32(),
+      () => r.readNestedObjectForCollection(Level2Ext.empty()),
+    );
+    tags = r.readList(() => r.readString());
+  }
+
+  @override
+  String toString() =>
+      'Level1Ext(root: $root, registry: $registry, tags: $tags)';
+}
+
+void deepComplexTest() {
+  final l4a = Level4Ext(10, true, [1.1, 2.2], 'A');
+  final l4b = Level4Ext(20, false, [3.3], 'B');
+  final lookup3 = {
+    'x': Level4Ext(30, true, [4.4], 'X')
+  };
+  final lvl3Main = Level3Ext(l4a, l4b, lookup3);
+
+  final extra1 = Level3Ext(
+    Level4Ext(40, true, [], 'E1'),
+    null,
+    {},
+  );
+  final extra2Lookup = {
+    'foo': Level4Ext(50, false, [5.5], 'Foo')
+  };
+  final extra2 = Level3Ext(
+    Level4Ext(50, false, [5.5], 'Foo'),
+    Level4Ext(60, true, [6.6], 'Sixty'),
+    extra2Lookup,
+  );
+
+  final lvl2Root = Level2Ext(
+    lvl3Main,
+    [extra1, extra2],
+    Level4Ext(70, false, [7.7], 'Leaf'),
+  );
+
+  final registry = {
+    1: lvl2Root,
+    2: Level2Ext.empty(),
+  };
+
+  final tags = ['tag1', 'tag2', 'tag3'];
+  final lvl1 = Level1Ext(lvl2Root, registry, tags);
+
+  // --- Encode ---
+  final bytes = lvl1.toBincode();
+
+  print('Deep Complex Bytes (${bytes.length}): ${bytes.toList()}');
+
+  // --- Decode ---
+  final decoded = Level1Ext.empty()..fromBincode(bytes);
+
+  print('root.main.primary: ${decoded.root.main.primary}');
+  print('root.main.optionalChild: ${decoded.root.main.optionalChild}');
+  print('root.main.lookup: ${decoded.root.main.lookup}\n');
+
+  print('root.extras[0]: ${decoded.root.extras[0]}');
+  print('root.extras[1]: ${decoded.root.extras[1]}\n');
+
+  print('root.extraLeaf: ${decoded.root.extraLeaf}\n');
+
+  print('registry[1]: ${decoded.registry[1]}');
+  print('registry[2]: ${decoded.registry[2]}\n');
+
+  print('tags: ${decoded.tags}\n');
+
+  // --- Verify ---
+  expect(decoded.root.main.primary.value, equals(10));
+  expect(decoded.root.main.primary.active, isTrue);
+  expect(decoded.root.main.primary.metrics, equals([1.1, 2.2]));
+  expect(decoded.root.main.primary.name, equals('A'));
+
+  expect(decoded.root.main.optionalChild, isNotNull);
+  expect(decoded.root.main.lookup['x']!.name, equals('X'));
+
+  expect(decoded.root.extras.length, equals(2));
+  expect(decoded.root.extras[0].primary.value, equals(40));
+  expect(decoded.root.extras[0].optionalChild, isNull);
+  expect(decoded.root.extras[1].primary.value, equals(50));
+  expect(decoded.root.extras[1].optionalChild!.value, equals(60));
+
+  expect(decoded.root.extraLeaf.value, equals(70));
+  expect(decoded.root.extraLeaf.name, equals('Leaf'));
+
+  // Registry
+  expect(decoded.registry.length, equals(2));
+  final reg1 = decoded.registry[1]!;
+  expect(reg1.main.primary.value, equals(10));
+  expect(decoded.registry[2]!.main.primary.value, equals(0));
+
+  expect(decoded.tags, equals(tags));
 }

@@ -7,10 +7,8 @@
 
 library;
 
-export 'src/builder.dart';
-export 'src/byte_data_wrapper.dart';
 export 'src/codable.dart';
-export 'src/exception/exception.dart';
+export 'src/enums.dart';
 export 'src/extensions/list_encoding_extension.dart';
 export 'src/reader.dart';
 export 'src/writer.dart';

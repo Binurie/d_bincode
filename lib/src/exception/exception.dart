@@ -5,7 +5,6 @@
 // a particular purpose.
 // ============================================================
 
-
 /// Base exception used for all bincode-related errors.
 base class BincodeException implements Exception {
   /// A descriptive error message.
@@ -26,7 +25,7 @@ base class BincodeException implements Exception {
 }
 
 /// Thrown when an invalid boolean value is encountered during decoding.
-/// 
+///
 /// According to the specification, boolean values should be encoded as
 /// a single byte of value 0 (false) or 1 (true). Any other value triggers this error.
 base class InvalidBooleanValueException extends BincodeException {
@@ -42,12 +41,13 @@ base class InvalidBooleanValueException extends BincodeException {
 base class InvalidOptionTagException extends BincodeException {
   final int tag;
   InvalidOptionTagException(this.tag)
-      : super('Invalid option tag encountered: $tag. Expected 0 (None) or 1 (Some).');
+      : super(
+            'Invalid option tag encountered: $tag. Expected 0 (None) or 1 (Some).');
 }
 
 /// Thrown when a character’s encoding does not represent a valid Unicode scalar value.
-/// 
-/// This error should be thrown during deserialization when the character code 
+///
+/// This error should be thrown during deserialization when the character code
 /// lies in the surrogate range (0xD800–0xDFFF) or outside the valid Unicode range.
 base class InvalidCharEncodingException extends BincodeException {
   /// The invalid code point encountered.
@@ -55,12 +55,11 @@ base class InvalidCharEncodingException extends BincodeException {
 
   InvalidCharEncodingException(this.codePoint)
       : super(
-          'Invalid char encoding: code point $codePoint is not a valid Unicode scalar value.'
-        );
+            'Invalid char encoding: code point $codePoint is not a valid Unicode scalar value.');
 }
 
 /// Thrown when the type of the data read does not match the expected type.
-/// 
+///
 /// This is useful for generic type mismatches where the reader expected, for example,
 /// an unsigned integer but the value decoded is incompatible.
 base class TypeMismatchException extends BincodeException {
@@ -86,7 +85,6 @@ base class Utf8DecodingException extends BincodeException {
       : super('UTF-8 decoding error: $details');
 }
 
-
 /// Base exception for errors that occur during writing.
 base class BincodeWriteException extends BincodeException {
   BincodeWriteException(super.message, [super.cause]);
@@ -106,6 +104,8 @@ base class InvalidWriteRangeException extends BincodeWriteException {
   /// The maximum allowed value.
   final dynamic maxValue;
 
-  InvalidWriteRangeException(this.value, this.type, {this.minValue, this.maxValue})
-      : super('Value $value is out of range for $type. Expected range: ${minValue ?? "-∞"} to ${maxValue ?? "∞"}');
+  InvalidWriteRangeException(this.value, this.type,
+      {this.minValue, this.maxValue})
+      : super(
+            'Value $value is out of range for $type. Expected range: ${minValue ?? "-∞"} to ${maxValue ?? "∞"}');
 }

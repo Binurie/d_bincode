@@ -8,9 +8,6 @@
 import '../../d_bincode.dart';
 
 /// Extension providing list serialization methods for [BincodeWriter].
-///
-/// Adds convenience methods to serialize common Dart list types (e.g., `List<int>`, `List<double>`)
-/// using a `u64` length prefix followed by item-wise encoding.
 extension BincodeListEncoding on BincodeWriter {
   /// Encodes a `List<int>` using `writeI32` for each value, prefixed with the list length (`u64`).
   void writeI32List(List<int> values) {
@@ -50,8 +47,6 @@ extension BincodeListEncoding on BincodeWriter {
 }
 
 /// Extension providing list deserialization methods for [BincodeReader].
-///
-/// These methods decode a length-prefixed list of common types.
 extension BincodeListDecoding on BincodeReader {
   /// Decodes a list of signed 32-bit integers (`i32`) prefixed with a `u64` length.
   List<int> readI32List() {
@@ -75,8 +70,10 @@ extension BincodeListDecoding on BincodeReader {
   ///
   /// - [fixedLength]: byte width of each string
   /// - [encoding]: character encoding used, defaults to UTF-8
-  List<String> readStringList(int fixedLength, {StringEncoding encoding = StringEncoding.utf8}) {
+  List<String> readFixedStringList(int fixedLength,
+      {StringEncoding encoding = StringEncoding.utf8}) {
     final length = readU64();
-    return List<String>.generate(length, (_) => readFixedString(fixedLength, encoding: encoding));
+    return List<String>.generate(
+        length, (_) => readFixedString(fixedLength, encoding: encoding));
   }
 }
