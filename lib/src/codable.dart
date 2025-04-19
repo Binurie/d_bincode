@@ -34,9 +34,7 @@ import 'package:d_bincode/d_bincode.dart';
 /// for more details on the instantiation requirement.
 abstract class BincodeCodable implements BincodeEncodable, BincodeDecodable {}
 
-
 //------------------------------------------------------------------------------
-
 
 /// Defines the contract for types that can be serialized *into* the Bincode
 /// binary format using a [BincodeWriter].
@@ -64,9 +62,7 @@ abstract class BincodeEncodable {
   void encode(BincodeWriter writer);
 }
 
-
 //------------------------------------------------------------------------------
-
 
 /// Defines the contract for types that can be deserialized *from* the Bincode
 /// binary format using a [BincodeReader].

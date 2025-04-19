@@ -191,13 +191,13 @@ abstract class BincodeWriterBuilder {
   /// Writes a list of 64‑bit floating‑point values [values].
   void writeFloat64List(List<double> values);
 
- void writeNestedValueForCollection(BincodeCodable value);
+  void writeNestedValueForCollection(BincodeCodable value);
 
- void writeNestedValueForFixed(BincodeCodable value);
+  void writeNestedValueForFixed(BincodeCodable value);
 
- void writeOptionNestedValueForCollection(BincodeCodable? value) ;
+  void writeOptionNestedValueForCollection(BincodeCodable? value);
 
- void writeOptionNestedValueForFixed(BincodeCodable? value);
+  void writeOptionNestedValueForFixed(BincodeCodable? value);
 
   // -- Output Methods --
 

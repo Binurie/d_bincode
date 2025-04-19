@@ -42,43 +42,43 @@ class BincodeWriter implements BincodeWriterBuilder {
   int _capacity; // buffer size
 
   /// A fast, flexible binary serializer for Rust-compatible Bincode data.
-///
-/// `BincodeWriter` provides low-level control over binary encoding of Dart objects
-/// using the same layout as Rust’s `bincode` format. It is optimized for
-/// performance, alignment correctness, and composability with other low-level APIs.
-///
-/// ### Core Capabilities
-/// - Encodes primitive values (`u8`, `i32`, `f64`, etc.) with little-endian layout
-/// - Writes Rust-style `Option<T>` types using 1-byte tags
-/// - Supports strings (length-prefixed or fixed-length)
-/// - Writes nested structs using fixed-size or collection-style layout
-/// - Serializes `Vec<T>` and `HashMap<K, V>` as sequences with length prefix
-///
-/// ### Performance & Safety
-/// - Uses a dynamically growing internal buffer (default 128 bytes, expandable)
-/// - Avoids allocations for primitives and numeric arrays when possible
-/// - Uses `TypedData.view` for bulk writes (e.g. `Float64List`) when input is typed
-/// - `reserve()` allows manual preallocation for large payloads
-/// - Reusable: call `reset()` or `rewind()` to reuse the same writer instance
-///
-/// ### Memory Behavior
-/// - Zero-copy for writing raw views like `Uint8List`, `Int16List`, etc.
-/// - Scalar types and strings are encoded by value, with no reference retained
-/// - Temporary shared buffer is used for float conversion (no allocation per write)
-///
-/// ### Example
-/// ```dart
-/// final writer = BincodeWriter();
-/// writer.writeU8(1);
-/// writer.writeF64(3.14);
-/// writer.writeString("hello");
-/// final encoded = writer.toBytes(); // Uint8List of written data
-/// ```
-///
-/// ### Supported Rust Layouts
-/// - `Vec<T>` → `[u64 length][T, T, ...]`
-/// - `Option<T>` → `[0]` if null, `[1][T]` if value exists
-/// - Structs → fixed layout or collection-style nested with length prefix
+  ///
+  /// `BincodeWriter` provides low-level control over binary encoding of Dart objects
+  /// using the same layout as Rust’s `bincode` format. It is optimized for
+  /// performance, alignment correctness, and composability with other low-level APIs.
+  ///
+  /// ### Core Capabilities
+  /// - Encodes primitive values (`u8`, `i32`, `f64`, etc.) with little-endian layout
+  /// - Writes Rust-style `Option<T>` types using 1-byte tags
+  /// - Supports strings (length-prefixed or fixed-length)
+  /// - Writes nested structs using fixed-size or collection-style layout
+  /// - Serializes `Vec<T>` and `HashMap<K, V>` as sequences with length prefix
+  ///
+  /// ### Performance & Safety
+  /// - Uses a dynamically growing internal buffer (default 128 bytes, expandable)
+  /// - Avoids allocations for primitives and numeric arrays when possible
+  /// - Uses `TypedData.view` for bulk writes (e.g. `Float64List`) when input is typed
+  /// - `reserve()` allows manual preallocation for large payloads
+  /// - Reusable: call `reset()` or `rewind()` to reuse the same writer instance
+  ///
+  /// ### Memory Behavior
+  /// - Zero-copy for writing raw views like `Uint8List`, `Int16List`, etc.
+  /// - Scalar types and strings are encoded by value, with no reference retained
+  /// - Temporary shared buffer is used for float conversion (no allocation per write)
+  ///
+  /// ### Example
+  /// ```dart
+  /// final writer = BincodeWriter();
+  /// writer.writeU8(1);
+  /// writer.writeF64(3.14);
+  /// writer.writeString("hello");
+  /// final encoded = writer.toBytes(); // Uint8List of written data
+  /// ```
+  ///
+  /// ### Supported Rust Layouts
+  /// - `Vec<T>` → `[u64 length][T, T, ...]`
+  /// - `Option<T>` → `[0]` if null, `[1][T]` if value exists
+  /// - Structs → fixed layout or collection-style nested with length prefix
   BincodeWriter({
     int initialCapacity = 128,
     @Deprecated('Use unchecked') bool? unsafe,

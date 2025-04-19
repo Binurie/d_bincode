@@ -436,9 +436,9 @@ class BincodeReader implements BincodeReaderBuilder {
   /// This method is useful when you need to peek multiple values, while maintaining
   /// the current reader position intact.
   T peekSession<T>(T Function() body) {
-    final savedPosition = _pos; 
+    final savedPosition = _pos;
     try {
-      return body(); 
+      return body();
     } finally {
       _pos = savedPosition;
     }

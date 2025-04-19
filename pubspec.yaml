@@ -1,6 +1,7 @@
 name: d_bincode
 description: >
-  A performant bincode like serialization library for Dart. Manually writen, provides encoding for binary data structures, mirroring the bincode specification (Rust) minimalistically.
+  A performant Dart implementation of the Bincode binary serialization format.
+  Requires manual implementation for encoding/decoding custom types.
 version: 3.0.0
 license: 'MIT'
 
