@@ -51,3 +51,9 @@
 * String Encode and Decode Method's and Enums removed - only utf8/ASCII Supported
 * Less Exceptions and checks
 * euc dependency got removed
+
+## 3.0.1
+
+### Patch
+
+* Fixed formating and describtion in pubspec.

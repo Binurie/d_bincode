@@ -2,7 +2,7 @@ name: d_bincode
 description: >
   A performant Dart implementation of the Bincode binary serialization format.
   Requires manual implementation for encoding/decoding custom types.
-version: 3.0.0
+version: 3.0.1
 license: 'MIT'
 
 homepage: https://github.com/Binurie/d_bincode
