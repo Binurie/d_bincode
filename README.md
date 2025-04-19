@@ -1,33 +1,33 @@
-````markdown
 # d_bincode
 
 [![Pub Version](https://img.shields.io/pub/v/d_bincode)](https://pub.dev/packages/d_bincode) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](/LICENSE) 
+
 A Dart implementation of the [Bincode](https://github.com/bincode-org/bincode) binary serialization format. Designed for efficient, compact, and cross-language data serialization, particularly suitable for Inter-Process Communication (IPC) (my last use case), network protocols, and configuration storage where performance and size matter.
 
 Dart implementation of the Bincode binary format. Manual BincodeCodable implementation is currently required, providing control but demanding more setup. Future build_runner code generation is planned but subject to change.
 
 ## Features
 
-**Core Bincode Types:** Supports encoding and decoding of:
+- **Core Bincode Types:** Supports encoding and decoding of:
     * Integers (u8, u16, u32, u64, i8, i16, i32, i64)
     * Floats (f32, f64)
     * Booleans (bool)
     * UTF-8 Strings (dynamic length)
     * Fixed-length Strings (with truncation/padding)
-**Collections:**
+- **Collections:**
     * Lists (`List<T>`) / Vectors (`Vec<T>`)
     * Maps (`Map<K, V>`)
     * Efficient typed lists (`Uint8List`, `Int8List`, `Uint16List`, etc., `Float32List`, `Float64List`)
-**Options:** Handles nullable types (`T?`) using Bincode's `Option<T>` representation.
-**Custom Types:** Easily serialize custom classes by implementing the `BincodeCodable` interface.
-**Nested Structures:** Supports arbitrarily nested complex objects, including combinations of lists, maps, and custom types.
-**Utilities:**
+- **Options:** Handles nullable types (`T?`) using Bincode's `Option<T>` representation.
+- **Custom Types:** Easily serialize custom classes by implementing the `BincodeCodable` interface.
+- **Nested Structures:** Supports arbitrarily nested complex objects, including combinations of lists, maps, and custom types.
+- **Utilities:**
     * `BincodeWriter` for encoding data with buffer management (`reserve`, `reset`).
     * `BincodeReader` for decoding data with cursor control (`seek`, `rewind`, `skip`, `align`, `peek`).
     * Helper functions for common tasks (`encodeToBytes`, `decode`, `isValidBincode`, `measure`, `toHex`, `encodeToBase64`, `stripNulls`).
     * Support for `IOSink` and file operations (`encodeToSink`, `encodeToFileSync`).
-**Alignment:** Handles data alignment considerations.
-**Robustness:** Includes checks for available bytes and validation capabilities.
+- **Alignment:** Handles data alignment considerations.
+- **Robustness:** Includes checks for available bytes and validation capabilities.
 
 ## Installation
 
@@ -241,13 +241,15 @@ class Outer implements BincodeCodable {
   * `BincodeReader.stripNulls(string)`: Remove trailing null characters.
   * `BincodeReader.peekLength(bytes)`: Read the initial u64 length prefix.
 
-Benchmarks
+## Benchmarks
 
-Disclaimer: The following benchmark results are provided for illustrative purposes only. Actual performance may vary significantly depending on the specific data structures being serialized, the hardware used, the Dart VM version, overall system load, and other factors. These figures do not constitute a guarantee of performance in your specific application. Always benchmark within your own use case.
+**Disclaimer:** The following benchmark results are provided for illustrative purposes only. Actual performance may vary significantly depending on the specific data structures being serialized, the hardware used, the Dart VM version, overall system load, and other factors. These figures do not constitute a guarantee of performance in your specific application. Always benchmark within your own use case.
 
-Complex Nested Data Test
+### Complex Nested Data Test
+
 Results from serializing/deserializing a complex, multi-level nested object 5 million times:
 
+```text
 // ======================================
 //  Serialization Benchmark (×5,000,000)
 // ======================================
@@ -267,10 +269,13 @@ Results from serializing/deserializing a complex, multi-level nested object 5 mi
 //   Size ratio (JSON/B):   2.74×
 //   Saved bytes:           902 (63.5% smaller)
 // --------------------------------------
+```
 
-Simple Data Test (Single u32)
+### Simple Data Test (Single u32)
+
 Results from serializing/deserializing a single 32-bit unsigned integer 100 million times:
 
+```text
 // ==========================================
 //  Minimal Payload Benchmark (×100,000,000)
 // ==========================================
@@ -282,27 +287,23 @@ Results from serializing/deserializing a single 32-bit unsigned integer 100 mill
 // Bincode Round‐trip | Total:  1260.8ms | Avg:   0.013µs
 
 // Speed‐ups vs JSON:
-//   • Encode faster:       136.90×
-//   • Decode faster:       57.20×
-//   • Round‐trip faster:   40.34×
+// • Encode faster:       136.90×
+// • Decode faster:       57.20×
+// • Round‐trip faster:   40.34×
 
 // Size Comparison:
-//   • Bincode: 4 bytes
-//   • JSON:    15 bytes
-//   • JSON is 3.75× larger
-//   • Bincode saves 73.3%
+// • Bincode: 4 bytes
+// • JSON:    15 bytes
+// • JSON is 3.75× larger
+// • Bincode saves 73.3%
 
 // Total Saved Over All Items:
-//   • Bytes: 1,100,000,000
-//   • KB:    1074218.75
-//   • MB:    1049.04
-
-Note: As stated in the disclaimer, these specific values depend heavily on the testing environment and the nature of the data.
-
-
-```bash
-dart test
+// • Bytes: 1,100,000,000
+// • KB:    1074218.75
+// • MB:    1049.04
 ```
+
+**Note:** As stated in the disclaimer, these specific values depend heavily on the testing environment and the nature of the data.
 
 ## Additional Information
 
