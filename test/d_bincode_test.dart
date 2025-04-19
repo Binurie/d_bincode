@@ -1,3 +1,26 @@
+// Copyright (c) 2025 Binurie
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:d_bincode/d_bincode.dart';
@@ -8,18 +31,15 @@ void main() {
     test('Class Encoding', classEncodingSpecTest);
     test('Struct Encoding', structEncodingSpecTest);
     test('Option Encoding', optionEncodingSpecTest);
-    test('Collection Encoding', collectionEncodingSpecTest);
     test('UTF-8 String Encoding', utf8StringSpecTest);
     test('Fixed Array Encoding', arrayEncodingSpecTest);
     test('Enum Variant Encoding', enumEncodingSpecTest);
     test('Empty String Encoding', emptyStringEncodingTest);
     test('Empty Vec Encoding', emptyVecEncodingTest);
     test('Optional Zero Value Encoding', optionalZeroTest);
-    test('OptionF32Triple null', optionF32TripleNullTest);
     test('Float Precision (f32)', floatPrecisionTest);
     test('Map Encoding', mapEncodingTest);
     test('Nested Struct Encoding', nestedStructTest);
-    test('Shift-JIS Encoding Manual', shiftJisEncodingTest);
     test('Fixed-Length String Overflow', fixedStringOverflowTest);
     test('Option FixedString Encoding', optionFixedStringTest);
     test('Large Vec<u8> Stress Test', largeVectorStressTest);
@@ -48,19 +68,107 @@ void main() {
     test('Crazy 4-Level Deep Nested Struct and List - Map Encoding',
         ultraInsaneCrazyTest);
     test('Deep Complex Test', deepComplexTest);
+
+    group('BincodeWriter Utils', () {
+      test('encodeToBytes produces same as manual encode + toBytes', () {
+        final pair = SimplePair(0xAB, 0xCDEF);
+        final w1 = BincodeWriter();
+        w1.reset();
+        pair.encode(w1);
+        final manual = w1.toBytes();
+        print('manual bytes: $manual');
+
+        final auto = w1.encodeToBytes(pair);
+        print('auto bytes:   $auto');
+
+        expect(auto, equals(manual),
+            reason: 'encodeToBytes should wrap reset+encode+toBytes');
+      });
+
+      test('measure returns the exact byte length of encode', () {
+        final pair = SimplePair(1, 0x1234);
+        final w = BincodeWriter(initialCapacity: 4);
+        final measured = w.measure(pair);
+        print('measured byte length: $measured');
+
+        w.reset();
+        pair.encode(w);
+        final actual = w.getBytesWritten();
+        print('actual byte length:   $actual');
+
+        expect(measured, equals(actual),
+            reason: 'measure() must match getBytesWritten() after encode');
+      });
+
+      test('static encode matches encodeToBytes', () {
+        final pair = SimplePair(5, 10);
+        final fromStatic = BincodeWriter.encode(pair, initialCapacity: 2);
+        print('static.encode bytes:   $fromStatic');
+
+        final fromInstance =
+            BincodeWriter(initialCapacity: 2).encodeToBytes(pair);
+        print('instance.encode bytes: $fromInstance');
+
+        expect(fromStatic, equals(fromInstance),
+            reason: 'static encode(...) should be equivalent');
+      });
+
+      test('reserve pre‑allocates without losing data', () {
+        final w = BincodeWriter(initialCapacity: 2);
+        w.writeU8(0x42);
+        print('before reserve: ${w.toBytes()}');
+
+        w.reserve(16);
+
+        w.writeU8(0x99);
+        final result = w.toBytes();
+        print('after reserve+write: $result');
+
+        expect(result, equals(Uint8List.fromList([0x42, 0x99])),
+            reason: 'reserve() should not lose or reorder existing bytes');
+      });
+
+      test('toHex produces dash‑separated lowercase hex', () {
+        final bytes = Uint8List.fromList([0xFF, 0x0A, 0x1B, 0x00]);
+        final hex = BincodeWriter.toHex(bytes);
+        print('hex dump: $hex');
+        expect(hex, equals('ff-0a-1b-00'));
+      });
+
+      test('encodeToBase64 wraps encode + Base64', () {
+        final codable = BytesOnly(Uint8List.fromList([1, 2, 3]));
+        final b64 = BincodeWriter.encodeToBase64(codable);
+        print('base64: $b64');
+        expect(b64, equals(base64.encode([1, 2, 3])));
+      });
+      test('encodeToSink writes to IOSink correctly', () async {
+        encodeToSinkTest();
+      });
+    });
+    group('Reader Static API', () {
+      test('isValidBincode works', isValidBincodeTest);
+      test('decodeFixed decodes Vec3 correctly', decodeFixedTest);
+      test('decode reads dynamic struct', decodeDynamicTest);
+      test('fromBuffer reads buffer view correctly', fromBufferTest);
+      test('stripNulls removes null chars', stripNullsTest);
+      test(
+          'measureListByteSize returns expected size', measureListByteSizeTest);
+      test('peekLength reads length prefix from start', peekLengthTest);
+    });
+    group('Reader Utility API', () {
+      test('hasBytes checks available space', hasBytesTest);
+      test('isAligned detects proper alignment', isAlignedTest);
+      test('align() jumps to next valid offset', alignTest);
+      test('skip methods move cursor correctly', skipMethodsTest);
+    });
+    group('Reader Utility API - Peek and Skip Options', () {
+      test('peek methods do not change position', peekMethodsTest);
+      test('skipOption skips over optional values', skipOptionTest);
+    });
   });
 }
 
-/// --- Class Encoding Example ---
-/// Simulates the equivalent of this Rust struct:
-/// ```rust
-/// struct ExampleData {
-///     id: u32,
-///     value: f32,
-///     label: [u8; 8]  // fixed-size string padded to 8 bytes
-/// }
-/// ```
-class ExampleData implements BincodeEncodable, BincodeDecodable {
+class ExampleData implements BincodeCodable {
   int id;
   double value;
   String label;
@@ -73,62 +181,69 @@ class ExampleData implements BincodeEncodable, BincodeDecodable {
         label = '';
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeU32(id);
-    writer.writeF32(value);
-    writer.writeFixedString(label, 8);
-    return writer.toBytes();
+  void encode(BincodeWriter w) {
+    w
+      ..writeU32(id)
+      ..writeF32(value)
+      ..writeFixedString(label, 8);
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    id = reader.readU32();
-    value = reader.readF32();
-    label = reader.readFixedString(8).replaceAll('\x00', '');
+  void decode(BincodeReader r) {
+    id = r.readU32();
+    value = r.readF32();
+
+    label = r.readFixedString(8).replaceAll('\x00', '');
   }
 
   @override
   String toString() => 'ExampleData(id: $id, value: $value, label: "$label")';
 }
 
-/// Test that the encoding and decoding of ExampleData conforms to the bincode format.
 void classEncodingSpecTest() {
   final data = ExampleData(123, 1.5, 'Test');
 
-  final encoded = data.toBincode();
+  final writer = BincodeWriter();
+  data.encode(writer);
+  final encoded = writer.toBytes();
 
-  // Expected encoding:
-  // u32: 123 -> [123, 0, 0, 0]
-  // f32: 1.5 -> [0, 0, 192, 63]
-  // fixed string "Test" padded to 8 bytes -> [84, 101, 115, 116, 0, 0, 0, 0]
-  final expected = Uint8List.fromList(
-    [123, 0, 0, 0, 0, 0, 192, 63, 84, 101, 115, 116, 0, 0, 0, 0],
-  );
+  final expected = Uint8List.fromList([
+    123,
+    0,
+    0,
+    0,
+    0,
+    0,
+    192,
+    63,
+    84,
+    101,
+    115,
+    116,
+    0,
+    0,
+    0,
+    0,
+  ]);
 
-  print("ExampleData encoding: $encoded");
-
+  print('ExampleData encoding: $encoded');
   expect(encoded, equals(expected),
       reason: "Encoded bytes don't match expected format");
 
-  // Decode using the empty constructor + instance method
   final decoded = ExampleData.empty();
-  decoded.fromBincode(encoded);
+  decoded.decode(BincodeReader(encoded));
 
-  print("Decoded: $decoded");
-
+  print('Decoded: $decoded');
   expect(decoded.id, equals(123), reason: "ID mismatch");
   expect(decoded.value.toStringAsFixed(2), equals('1.50'),
       reason: "Float mismatch");
   expect(decoded.label, equals('Test'), reason: "Label mismatch");
 }
 
-/// --- 1. Verify Fixint Struct Compatibility (u32 + i32, 8 bytes total) ---
 void structEncodingSpecTest() {
   final writer = BincodeWriter();
-  writer.writeU32(0); // u32::MIN
-  writer.writeI32(2147483647); // i32::MAX
+  writer.writeU32(0);
+  writer.writeI32(2147483647);
 
   final encoded = writer.toBytes();
 
@@ -139,7 +254,6 @@ void structEncodingSpecTest() {
       "Struct encoding failed. Expected: ${expected.join(',')}, got: ${encoded.join(',')}");
 }
 
-/// --- 2. Option Encoding (Some/None with 1-byte tag + value) ---
 void optionEncodingSpecTest() {
   final someWriter = BincodeWriter();
   someWriter.writeOptionU32(123);
@@ -159,53 +273,34 @@ void optionEncodingSpecTest() {
       "Option None encoding failed. Expected: ${noneExpected.join(',')}, got: ${noneWriter.toBytes().join(',')}");
 }
 
-/// --- 3. Collection Encoding (Vec<>) with u64 length prefix) ---
-void collectionEncodingSpecTest() {
-  // === Part 1: test Vec<u8> encoding ===
-  final writer1 = BincodeWriter();
-  final list = [0, 1, 2];
-
-  writer1.writeU64(list.length);
-  for (final v in list) {
-    writer1.writeU8(v);
-  }
-
-  final encoded = writer1.toBytes();
-  final expected = Uint8List.fromList([3, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2]);
-
-  print("Vec<u8>: $encoded");
-  assert(encoded.join(',') == expected.join(','),
-      "Collection encoding failed. Expected: ${expected.join(',')}, got: ${encoded.join(',')}");
-
-  // === Part 2: test Option<F32Triple> with Float32List ===
-  final writer2 = BincodeWriter();
-  final vec = Float32List.fromList([1.0, 2.0, 3.0]);
-  writer2.writeOptionF32Triple(vec);
-
-  final bytes = writer2.toBytes();
-  final reader = BincodeReader(bytes);
-  final result = reader.readOptionF32Triple();
-
-  print("Option<F32Triple>: $result");
-  assert(result != null && result.length == 3 && result[0] == 1.0,
-      "Expected [1.0, 2.0, 3.0], got: $result");
-}
-
-/// --- 4. String UTF-8 Encoding (length-prefixed, per bincode) ---
-/// Uses the writeString() API that encodes a string as UTF-8 and prefixes with its u64 length.
 void utf8StringSpecTest() {
   final text = "Hello 🌍";
 
   final writer = BincodeWriter();
-  writer.writeString(text); // Uses API for length-prefixed UTF-8 string
+  writer.writeString(text);
 
   final result = writer.toBytes();
   print("UTF-8 String Encoding (Hello 🌍): $result");
 
   final expected = [
-    10, 0, 0, 0, 0, 0, 0, 0, // u64 length prefix: 10 bytes
-    72, 101, 108, 108, 111, 32, // "Hello "
-    240, 159, 140, 141 // UTF-8 for "🌍"
+    10,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    72,
+    101,
+    108,
+    108,
+    111,
+    32,
+    240,
+    159,
+    140,
+    141
   ];
 
   assert(result.length == expected.length,
@@ -214,7 +309,6 @@ void utf8StringSpecTest() {
       "UTF-8 string encoding failed. Expected: ${expected.join(',')}, got: ${result.join(',')}");
 }
 
-/// --- 5. Fixed-Length Array Encoding ---
 void arrayEncodingSpecTest() {
   final arr = [10, 20, 30, 40, 50];
   final writer = BincodeWriter();
@@ -230,19 +324,17 @@ void arrayEncodingSpecTest() {
       "Fixed array encoding failed. Expected: ${expected.join(',')}, got: ${encoded.join(',')}");
 }
 
-/// --- 6. Enum Variant Encoding (manual simulation) ---
-/// Simulates: enum MyEnum { A, B(u32), C { value: u32 } }
 void enumEncodingSpecTest() {
   final a = BincodeWriter();
-  a.writeU32(0); // Variant A: index 0
+  a.writeU32(0);
 
   final b = BincodeWriter();
-  b.writeU32(1); // Variant B: index 1
-  b.writeU32(0); // Payload for B
+  b.writeU32(1);
+  b.writeU32(0);
 
   final c = BincodeWriter();
-  c.writeU32(2); // Variant C: index 2
-  c.writeU32(0); // Payload for C
+  c.writeU32(2);
+  c.writeU32(0);
 
   print("Enum::A: ${a.toBytes()}");
   print("Enum::B(0): ${b.toBytes()}");
@@ -256,36 +348,30 @@ void enumEncodingSpecTest() {
       "Enum C encoding failed. Expected: [2, 0, 0, 0, 0, 0, 0, 0], got: ${c.toBytes().join(',')}");
 }
 
-/// --- 7. Empty String Encoding ---
-/// Tests an empty UTF-8 string with correct u64 length prefix.
 void emptyStringEncodingTest() {
   final writer = BincodeWriter();
-  writer.writeString(""); // Should write length 0 (u64)
+  writer.writeString("");
 
   final result = writer.toBytes();
-  final expected = Uint8List.fromList(List.filled(8, 0)); // u64: 0
+  final expected = Uint8List.fromList(List.filled(8, 0));
 
   print("Empty String Encoding: $result");
   expect(result, equals(expected));
 }
 
-/// --- 8. Empty List Encoding ---
-/// Tests Vec u8 where the list is empty.
 void emptyVecEncodingTest() {
   final writer = BincodeWriter();
-  writer.writeU64(0); // length 0
+  writer.writeU64(0);
   final result = writer.toBytes();
-  final expected = Uint8List.fromList(List.filled(8, 0)); // u64: 0
+  final expected = Uint8List.fromList(List.filled(8, 0));
 
   print("Empty Vec Encoding: $result");
   expect(result, equals(expected));
 }
 
-/// --- 9. Optional Zero Value ---
-/// Tests encoding of 0 as an option.
 void optionalZeroTest() {
   final writer = BincodeWriter();
-  writer.writeOptionU32(0); // flag = 1, value = 0
+  writer.writeOptionU32(0);
   final expected = Uint8List.fromList([1, 0, 0, 0, 0]);
 
   final bytes = writer.toBytes();
@@ -293,25 +379,6 @@ void optionalZeroTest() {
   expect(bytes, equals(expected));
 }
 
-/// --- 10. Optional None F32Triple ---
-/// Tests null vector writing (0 flag, followed by 12 zeroed bytes)
-void optionF32TripleNullTest() {
-  final writer = BincodeWriter();
-  writer.writeOptionF32Triple(null);
-
-  final bytes = writer.toBytes();
-  final expected = Uint8List.fromList([0]);
-
-  print("OptionF32Triple (null): $bytes");
-  expect(bytes, equals(expected));
-
-  final reader = BincodeReader(bytes);
-  final result = reader.readOptionF32Triple();
-  expect(result, isNull);
-}
-
-/// --- 11. Float Precision Test ---
-/// Tests if f32 maintains proper precision with 1.0 / 3.0
 void floatPrecisionTest() {
   final value = 1.0 / 3.0;
 
@@ -327,7 +394,6 @@ void floatPrecisionTest() {
       reason: 'Float32 precision too low');
 }
 
-/// --- 12. Map Encoding (Map u8, u32 ) ---
 void mapEncodingTest() {
   final writer = BincodeWriter();
   final map = {1: 100, 2: 200};
@@ -348,65 +414,50 @@ void mapEncodingTest() {
   expect(result[2], equals(200));
 }
 
-/// --- 13. Nested Struct Encoding ---
-
-/// --- 13. Nested Struct Encoding ---
-
-class InnerData implements BincodeEncodable, BincodeDecodable {
+class InnerData implements BincodeCodable {
   int code;
-
   InnerData(this.code);
+  InnerData.empty() : code = 0;
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    _writeTo(writer);
-    return writer.toBytes();
-  }
+  void encode(BincodeWriter w) => w.writeU32(code);
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    _readFrom(reader);
-  }
-
-  void _writeTo(BincodeWriter writer) {
-    writer.writeU32(code);
-  }
-
-  void _readFrom(BincodeReader reader) {
-    code = reader.readU32();
-  }
+  void decode(BincodeReader r) => code = r.readU32();
 }
 
-class OuterData implements BincodeEncodable, BincodeDecodable {
+class OuterData implements BincodeCodable {
   InnerData inner;
   double value;
 
   OuterData(this.inner, this.value);
+  OuterData.empty()
+      : inner = InnerData.empty(),
+        value = 0.0;
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    inner._writeTo(writer);
-    writer.writeF32(value);
-    return writer.toBytes();
+  void encode(BincodeWriter w) {
+    w.writeNestedValueForFixed(inner);
+    w.writeF32(value);
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    inner = InnerData(0);
-    inner._readFrom(reader);
-    value = reader.readF32();
+  void decode(BincodeReader r) {
+    inner = r.readNestedObjectForFixed(InnerData.empty());
+    value = r.readF32();
   }
 }
 
 void nestedStructTest() {
   final outer = OuterData(InnerData(777), 3.14);
-  final encoded = outer.toBincode();
 
-  final decoded = OuterData(InnerData(0), 0.0)..fromBincode(encoded);
+  final writer = BincodeWriter();
+  outer.encode(writer);
+  final encoded = writer.toBytes();
+
+  final reader = BincodeReader(encoded);
+  final decoded = OuterData.empty();
+  decoded.decode(reader);
 
   print("Nested struct: ${decoded.inner.code}, ${decoded.value}");
 
@@ -414,43 +465,25 @@ void nestedStructTest() {
   expect((decoded.value - 3.14).abs() < 1e-6, isTrue);
 }
 
-void shiftJisEncodingTest() {
-  final text = "こんにちは";
-
-  final writer = BincodeWriter();
-  writer.writeString(text, StringEncoding.shiftJis);
-
-  final bytes = writer.toBytes();
-  final reader = BincodeReader(bytes);
-
-  final decoded = reader.readString(StringEncoding.shiftJis);
-  print("Shift-JIS Decoded: $decoded");
-
-  expect(decoded, equals(text));
-}
-
-/// --- 15. Fixed-length String Overflow (should truncate + padding) ---
 void fixedStringOverflowTest() {
   final writer = BincodeWriter();
-  writer.writeFixedString("TOOLONG", 4); // Truncates to 4 bytes: "TOOL"
+  writer.writeFixedString("TOOLONG", 4);
   final result = writer.toBytes();
-  final expected = [84, 79, 79, 76]; // T O O L
+  final expected = [84, 79, 79, 76];
 
   print("Fixed string overflow: $result");
   expect(result.sublist(0, 4), equals(expected));
 
   final reader = BincodeReader(result);
-  final raw = reader.readFixedString(4); // still returns "TOOL"
-  expect(raw, equals("TOOL")); // ✅ already truncated, so no nulls to trim
+  final raw = reader.readFixedString(4);
+  expect(raw, equals("TOOL"));
 }
 
-/// --- 16. Option Fixed-Length String (with and without cleaning) ---
 void optionFixedStringTest() {
   final writer = BincodeWriter();
-  writer.writeOptionFixedString("Hello", 8); // Padded with \x00 to length 8
+  writer.writeOptionFixedString("Hello", 8);
   final bytes = writer.toBytes();
 
-  // --- Variant 1: Manual trimming ---
   final reader1 = BincodeReader(bytes);
   final raw = reader1.readOptionFixedString(8);
   final trimmed = raw?.replaceAll('\x00', '');
@@ -458,7 +491,6 @@ void optionFixedStringTest() {
   print("Manual cleaned: $trimmed");
   expect(trimmed, equals("Hello"));
 
-  // --- Variant 2: Using readCleanOptionFixedString() ---
   final reader2 = BincodeReader(bytes);
   final cleaned = reader2.readCleanOptionFixedString(8);
 
@@ -466,7 +498,6 @@ void optionFixedStringTest() {
   expect(cleaned, equals("Hello"));
 }
 
-/// --- 17. Large Vec Stress Test (1k entries) ---
 void largeVectorStressTest() {
   final values = List<int>.generate(1000, (i) => i % 256);
   final writer = BincodeWriter();
@@ -484,7 +515,6 @@ void largeVectorStressTest() {
   expect(readValues[999], equals(231));
 }
 
-/// --- 18. Boolean Encoding Test ---
 void booleanEncodingTest() {
   final writer = BincodeWriter();
   writer.writeBool(true);
@@ -498,7 +528,6 @@ void booleanEncodingTest() {
   expect(b2, isFalse);
 }
 
-/// --- 19. Optional Boolean Encoding ---
 void optionalBoolTest() {
   final writer = BincodeWriter();
   writer.writeOptionBool(true);
@@ -518,7 +547,6 @@ void optionalBoolTest() {
   expect(b3, isFalse);
 }
 
-/// --- 20. Optional U8/U16/U64 Encoding ---
 void optionalUnsignedIntegersTest() {
   final writer = BincodeWriter();
   writer.writeOptionU8(42);
@@ -540,7 +568,6 @@ void optionalUnsignedIntegersTest() {
   expect(reader.readOptionU64(), isNull);
 }
 
-/// --- 21. Optional f64 Encoding ---
 void optionalF64Test() {
   final writer = BincodeWriter();
   writer.writeOptionF64(3.14159);
@@ -557,7 +584,6 @@ void optionalF64Test() {
   expect(d2, isNull);
 }
 
-/// --- 22. Optional String Encoding (UTF-8) ---
 void optionalStringTest() {
   final writer = BincodeWriter();
   writer.writeOptionString("optional");
@@ -597,9 +623,9 @@ void cursorPositioningWriterTest() {
 
 void cursorPositioningReaderTest() {
   final writer = BincodeWriter();
-  writer.writeU8(42); // pos 0
-  writer.writeU8(84); // pos 1
-  writer.writeU8(126); // pos 2
+  writer.writeU8(42);
+  writer.writeU8(84);
+  writer.writeU8(126);
   final bytes = writer.toBytes();
 
   final reader = BincodeReader(bytes);
@@ -626,49 +652,49 @@ void cursorPositioningReaderTest() {
 
   reader.skipToEnd();
   print("Reader position after skipToEnd(): ${reader.position}");
-  expect(reader.position, equals(3)); // 3 bytes total
+  expect(reader.position, equals(3));
 }
 
 void cursorSeekWriterTest() {
   final writer = BincodeWriter();
-  writer.writeU8(10); // pos 0
-  writer.writeU8(20); // pos 1
-  writer.writeU8(30); // pos 2
+  writer.writeU8(10);
+  writer.writeU8(20);
+  writer.writeU8(30);
 
   print("Writer position after initial writes: ${writer.position}");
 
-  writer.seek(-1); // move back one byte
+  writer.seek(-1);
   print("Writer position after seek(-1): ${writer.position}");
   expect(writer.position, equals(2),
       reason: "Writer should be at position 2 after seek(-1)");
 
-  writer.writeU8(99); // overwrite last byte
+  writer.writeU8(99);
   final result = writer.toBytes();
   print("Bytes after overwriting at pos 2: $result");
   expect(result[2], equals(99),
       reason: "Byte at position 2 should be overwritten to 99");
 
-  writer.seek(-2); // move to position 1
+  writer.seek(-2);
   print("Writer position after seek(-2): ${writer.position}");
   expect(writer.position, equals(1), reason: "Writer at pos 1 after seek(-2)");
 }
 
 void cursorSeekReaderTest() {
   final writer = BincodeWriter();
-  writer.writeU8(100); // pos 0
-  writer.writeU8(101); // pos 1
-  writer.writeU8(102); // pos 2
+  writer.writeU8(100);
+  writer.writeU8(101);
+  writer.writeU8(102);
   final bytes = writer.toBytes();
   print("Bytes written for reader: $bytes");
 
   final reader = BincodeReader(bytes);
   print("Initial reader position: ${reader.position}");
 
-  reader.seek(2); // move to position 2
+  reader.seek(2);
   print("Reader position after seek(2): ${reader.position}");
   expect(reader.position, equals(2), reason: "Reader at pos 2 after seek(2)");
 
-  reader.seek(-1); // back to 1
+  reader.seek(-1);
   print("Reader position after seek(-1): ${reader.position}");
   expect(reader.position, equals(1), reason: "Reader at pos 1 after seek(-1)");
 
@@ -742,7 +768,6 @@ void floatListTests() {
 void completeReadWriteIntegrationTest() {
   final writer = BincodeWriter();
 
-  // --- Write Primitive Values ---
   writer.writeU8(255);
   writer.writeU16(65535);
   writer.writeU32(4294967295);
@@ -756,34 +781,27 @@ void completeReadWriteIntegrationTest() {
   writer.writeBool(true);
   writer.writeBool(false);
 
-  // --- Write Strings ---
   writer.writeString("Hello, world!");
   writer.writeFixedString("Dart", 10);
   writer.writeFixedString("Dart", 10);
 
-  // --- Write Optionals ---
   writer.writeOptionU8(100);
   writer.writeOptionU8(null);
   writer.writeOptionF64(6.28318);
   writer.writeOptionF64(null);
-  writer.writeOptionF32Triple(Float32List.fromList([1.0, 2.0, 3.0]));
-  writer.writeOptionF32Triple(null);
 
-  // --- Write Collections ---
   writer.writeList<int>([1, 2, 3, 4, 5], (int v) => writer.writeU8(v));
   writer.writeMap<int, String>(
       {1: "one", 2: "two"},
       (int key) => writer.writeU8(key),
       (String value) => writer.writeString(value));
 
-  // --- Write Numeric Lists ---
   writer.writeInt16List([-1, -2, -3]);
   writer.writeFloat32List([0.1, 0.2, 0.3]);
 
   final bytes = writer.toBytes();
   final reader = BincodeReader(bytes);
 
-  // Verify primitives.
   expect(reader.readU8(), equals(255));
   expect(reader.readU16(), equals(65535));
   expect(reader.readU32(), equals(4294967295));
@@ -797,93 +815,77 @@ void completeReadWriteIntegrationTest() {
   expect(reader.readBool(), isTrue);
   expect(reader.readBool(), isFalse);
 
-  // Verify strings.
   expect(reader.readString(), equals("Hello, world!"));
   expect(reader.readFixedString(10), equals("Dart${"\x00" * 6}"));
   expect(reader.readCleanFixedString(10), equals("Dart"));
 
-  // Verify optionals.
   expect(reader.readOptionU8(), equals(100));
   expect(reader.readOptionU8(), isNull);
   expect(reader.readOptionF64(), closeTo(6.28318, 1e-12));
   expect(reader.readOptionF64(), isNull);
-  final triple = reader.readOptionF32Triple();
-  expect(triple, isNotNull);
-  expect(triple!.toList(), equals([1.0, 2.0, 3.0]));
-  expect(reader.readOptionF32Triple(), isNull);
 
-  // Verify collections.
   final listRead = reader.readList(() => reader.readU8());
   expect(listRead, equals([1, 2, 3, 4, 5]));
   final mapRead =
       reader.readMap(() => reader.readU8(), () => reader.readString());
   expect(mapRead, equals({1: "one", 2: "two"}));
 
-  // Verify numeric lists.
   expect(reader.readInt16List(), equals([-1, -2, -3]));
   final floatList = reader.readFloat32List();
   expect(floatList.length, equals(3));
   for (int i = 0; i < floatList.length; i++) {
     expect(floatList[i], closeTo([0.1, 0.2, 0.3][i], 1e-5));
   }
-
-  expect(reader.remainingBytes(), isZero,
-      reason: "Reader should be at end of buffer");
 }
 
 class NestedValue implements BincodeCodable {
   int number;
-
   NestedValue(this.number);
+  NestedValue.empty() : number = 0;
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
+  void encode(BincodeWriter writer) {
     writer.writeU32(number);
-    return writer.toBytes();
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
+  void decode(BincodeReader reader) {
     number = reader.readU32();
   }
 }
 
-class ComplexHolder implements BincodeEncodable, BincodeDecodable {
+class ComplexHolder implements BincodeCodable {
   NestedValue value;
   NestedValue? optional;
 
   ComplexHolder(this.value, this.optional);
   ComplexHolder.empty()
-      : value = NestedValue(0),
+      : value = NestedValue.empty(),
         optional = null;
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
+  void encode(BincodeWriter writer) {
     writer.writeNestedValueForFixed(value);
+
     writer.writeOptionNestedValueForFixed(optional);
-    return writer.toBytes();
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-
-    // ---- Decode the fixed‐size nested value (no length prefix) ----
-    value = reader.readNestedObjectForFixed(NestedValue(0));
-
-    // ---- Decode the optional fixed‐size nested (tag + raw bytes) ----
-    optional = reader.readOptionNestedObjectForFixed(() => NestedValue(0));
+  void decode(BincodeReader reader) {
+    value = reader.readNestedObjectForFixed(NestedValue.empty());
+    optional = reader.readOptionNestedObjectForFixed(() => NestedValue.empty());
   }
 }
-// --- Test Cases ---
 
 void nestedEncodingWithNewMethodsTest() {
   final instance = ComplexHolder(NestedValue(42), NestedValue(99));
-  final encoded = instance.toBincode();
-  final decoded = ComplexHolder.empty()..fromBincode(encoded);
+
+  final writer = BincodeWriter();
+  instance.encode(writer);
+  final bytes = writer.toBytes();
+
+  final decoded = ComplexHolder.empty();
+  decoded.decode(BincodeReader(bytes));
 
   expect(decoded.value.number, equals(42));
   expect(decoded.optional, isNotNull);
@@ -892,45 +894,59 @@ void nestedEncodingWithNewMethodsTest() {
 
 void optionalNestedNoneTest() {
   final instance = ComplexHolder(NestedValue(1234), null);
-  final encoded = instance.toBincode();
 
-  // 4 bytes for `value` + 1 byte tag = 5 bytes
-  expect(encoded.length, equals(5),
+  final writer = BincodeWriter();
+  instance.encode(writer);
+  final bytes = writer.toBytes();
+
+  expect(bytes.length, equals(5),
       reason: 'Optional none writes only a tag byte after the fixed nested');
 
-  final decoded = ComplexHolder.empty()..fromBincode(encoded);
+  final decoded = ComplexHolder.empty();
+  decoded.decode(BincodeReader(bytes));
+
   expect(decoded.value.number, equals(1234));
   expect(decoded.optional, isNull);
 }
 
-class LoginRequest implements BincodeEncodable {
+class LoginRequest implements BincodeCodable {
   String username;
   String password;
 
   LoginRequest(this.username, this.password);
+  LoginRequest.empty()
+      : username = '',
+        password = '';
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeString(username);
-    writer.writeString(password);
-    return writer.toBytes();
+  void encode(BincodeWriter writer) {
+    writer
+      ..writeString(username)
+      ..writeString(password);
+  }
+
+  @override
+  void decode(BincodeReader reader) {
+    throw UnimplementedError();
   }
 }
 
-class LoginResponse implements BincodeDecodable {
+class LoginResponse implements BincodeCodable {
   bool success;
   String? token;
 
   LoginResponse(this.success, this.token);
-
   LoginResponse.empty()
       : success = false,
         token = null;
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
+  void encode(BincodeWriter writer) {
+    throw UnimplementedError();
+  }
+
+  @override
+  void decode(BincodeReader reader) {
     success = reader.readBool();
     token = reader.readOptionString();
   }
@@ -940,99 +956,85 @@ class LoginResponse implements BincodeDecodable {
 }
 
 void loginProtocolRoundtripTest() {
-  // CLIENT: Encode request to send to server
-  final request = LoginRequest("admin", "s3cr3t");
-  final sentBytes = request.toBincode();
+  final request = LoginRequest('admin', 's3cr3t');
+  final reqWriter = BincodeWriter();
+  request.encode(reqWriter);
+  final reqBytes = reqWriter.toBytes();
 
-  // SERVER: Decode request on Rust-side (simulated in Dart here)
-  final reader = BincodeReader(sentBytes);
-  final receivedUsername = reader.readString();
-  final receivedPassword = reader.readString();
+  final serverReader = BincodeReader(reqBytes);
+  final user = serverReader.readString();
+  final pass = serverReader.readString();
+  expect(user, equals('admin'));
+  expect(pass, equals('s3cr3t'));
 
-  expect(receivedUsername, equals("admin"));
-  expect(receivedPassword, equals("s3cr3t"));
+  final respWriter = BincodeWriter();
 
-  // SERVER: Create a LoginResponse
-  final responseWriter = BincodeWriter();
-  responseWriter.writeBool(true);
-  responseWriter.writeOptionString("auth-token-123");
-  final responseBytes = responseWriter.toBytes();
+  respWriter
+    ..writeBool(true)
+    ..writeOptionString('auth-token-123');
+  final respBytes = respWriter.toBytes();
 
-  // CLIENT: Decode response
   final response = LoginResponse.empty();
-  response.fromBincode(responseBytes);
-
-  print("Decoded LoginResponse: $response");
-
+  response.decode(BincodeReader(respBytes));
   expect(response.success, isTrue);
-  expect(response.token, equals("auth-token-123"));
+  expect(response.token, equals('auth-token-123'));
 }
 
-class IpcCommand implements BincodeEncodable, BincodeDecodable {
+class IpcCommand implements BincodeCodable {
   String command;
   Map<String, String> args;
 
   IpcCommand(this.command, this.args);
-
   IpcCommand.empty()
-      : command = "",
+      : command = '',
         args = {};
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    _writeTo(writer);
-    return writer.toBytes();
-  }
-
-  @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    _readFrom(reader);
-  }
-
-  void _writeTo(BincodeWriter writer) {
-    writer.writeString(command);
-    writer.writeU64(args.length);
-    args.forEach((key, value) {
-      writer.writeString(key);
-      writer.writeString(value);
+  void encode(BincodeWriter writer) {
+    writer
+      ..writeString(command)
+      ..writeU64(args.length);
+    args.forEach((k, v) {
+      writer
+        ..writeString(k)
+        ..writeString(v);
     });
   }
 
-  void _readFrom(BincodeReader reader) {
+  @override
+  void decode(BincodeReader reader) {
     command = reader.readString();
     final count = reader.readU64();
-    args = {};
-    for (int i = 0; i < count; i++) {
-      final key = reader.readString();
-      final val = reader.readString();
-      args[key] = val;
+    args = <String, String>{};
+    for (var i = 0; i < count; i++) {
+      final k = reader.readString();
+      final v = reader.readString();
+      args[k] = v;
     }
   }
+
+  @override
+  String toString() => 'IpcCommand(command: "$command", args: $args)';
 }
 
-class IpcResponse implements BincodeEncodable, BincodeDecodable {
+class IpcResponse implements BincodeCodable {
   bool success;
   String message;
 
   IpcResponse(this.success, this.message);
-
   IpcResponse.empty()
       : success = false,
-        message = "";
+        message = '';
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeBool(success);
-    writer.writeString(message);
-    return writer.toBytes();
+  void encode(BincodeWriter writer) {
+    writer
+      ..writeBool(success)
+      ..writeString(message);
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
+  void decode(BincodeReader reader) {
     success = reader.readBool();
     message = reader.readString();
   }
@@ -1042,82 +1044,67 @@ class IpcResponse implements BincodeEncodable, BincodeDecodable {
 }
 
 void ipcRoundtripTest() {
-  final ipc = IpcCommand("OpenFile", {
-    "path": "/tmp/data.txt",
-    "mode": "read",
+  final cmdOut = IpcCommand('OpenFile', {
+    'path': '/tmp/data.txt',
+    'mode': 'read',
   });
 
-  final encoded = ipc.toBincode();
+  final writer = BincodeWriter();
+  cmdOut.encode(writer);
+  final encoded = writer.toBytes();
 
-  // SERVER SIDE: simulate handling the command
-  final reader = BincodeReader(encoded);
-  final cmd = reader.readString();
-  final argCount = reader.readU64();
+  final reader1 = BincodeReader(encoded);
+  final cmdIn = IpcCommand.empty()..decode(reader1);
 
-  final args = <String, String>{};
-  for (int i = 0; i < argCount; i++) {
-    final k = reader.readString();
-    final v = reader.readString();
-    args[k] = v;
-  }
+  expect(cmdIn.command, equals('OpenFile'));
+  expect(cmdIn.args['path'], equals('/tmp/data.txt'));
+  expect(cmdIn.args['mode'], equals('read'));
 
-  expect(cmd, equals("OpenFile"));
-  expect(args["path"], equals("/tmp/data.txt"));
-  expect(args["mode"], equals("read"));
+  final respOut = IpcResponse(true, 'File opened successfully');
+  final respWriter = BincodeWriter();
+  respOut.encode(respWriter);
+  final responseBytes = respWriter.toBytes();
 
-  // SERVER RESPONDS
-  final responseWriter = BincodeWriter();
-  responseWriter.writeBool(true);
-  responseWriter.writeString("File opened successfully");
+  final reader2 = BincodeReader(responseBytes);
+  final respIn = IpcResponse.empty()..decode(reader2);
 
-  final responseBytes = responseWriter.toBytes();
+  print('IPC Response: $respIn');
 
-  // CLIENT SIDE
-  final response = IpcResponse.empty();
-  response.fromBincode(responseBytes);
-
-  print("IPC Response: $response");
-
-  expect(response.success, isTrue);
-  expect(response.message, contains("opened"));
+  expect(respIn.success, isTrue);
+  expect(respIn.message, contains('opened'));
 }
 
-class GameEntitySnapshot implements BincodeEncodable, BincodeDecodable {
+class GameEntitySnapshot implements BincodeCodable {
   int id;
-  double x;
-  double y;
-  double rotation;
+  double x, y, rotation;
   String type;
 
   GameEntitySnapshot(this.id, this.x, this.y, this.rotation, this.type);
 
-  @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    _writeTo(writer);
-    return writer.toBytes();
-  }
+  GameEntitySnapshot.empty()
+      : id = 0,
+        x = 0,
+        y = 0,
+        rotation = 0,
+        type = '';
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    _readFrom(reader);
+  void encode(BincodeWriter w) {
+    w
+      ..writeU32(id)
+      ..writeF32(x)
+      ..writeF32(y)
+      ..writeF32(rotation)
+      ..writeString(type);
   }
 
-  void _writeTo(BincodeWriter writer) {
-    writer.writeU32(id);
-    writer.writeF32(x);
-    writer.writeF32(y);
-    writer.writeF32(rotation);
-    writer.writeString(type);
-  }
-
-  void _readFrom(BincodeReader reader) {
-    id = reader.readU32();
-    x = reader.readF32();
-    y = reader.readF32();
-    rotation = reader.readF32();
-    type = reader.readString();
+  @override
+  void decode(BincodeReader r) {
+    id = r.readU32();
+    x = r.readF32();
+    y = r.readF32();
+    rotation = r.readF32();
+    type = r.readString();
   }
 
   @override
@@ -1126,36 +1113,41 @@ class GameEntitySnapshot implements BincodeEncodable, BincodeDecodable {
 }
 
 Uint8List processEntityOnServer(Uint8List requestBytes) {
-  final entity = GameEntitySnapshot(0, 0.0, 0.0, 0.0, "");
-  entity.fromBincode(requestBytes);
+  final reader = BincodeReader(requestBytes);
+  final entity = GameEntitySnapshot.empty()..decode(reader);
 
   final updated = GameEntitySnapshot(
     entity.id,
     entity.x.clamp(0.0, 100.0),
     entity.y.clamp(0.0, 100.0),
     (entity.rotation + 45.0) % 360.0,
-    "ServerConfirmed-${entity.type}",
+    'ServerConfirmed-${entity.type}',
   );
 
-  return updated.toBincode();
+  final writer = BincodeWriter();
+  updated.encode(writer);
+  return writer.toBytes();
 }
 
 void entitySnapshotIpcTest() {
-  final clientSnapshot = GameEntitySnapshot(1, 123.0, -20.0, 270.0, "Player");
-  final requestBytes = clientSnapshot.toBincode();
+  final message = GameEntitySnapshot(1, 123.0, -20.0, 270.0, 'Player');
+  final writer = BincodeWriter();
+  message.encode(writer);
+  final requestBytes = writer.toBytes();
 
   final responseBytes = processEntityOnServer(requestBytes);
-  final updatedSnapshot = GameEntitySnapshot(0, 0.0, 0.0, 0.0, "");
-  updatedSnapshot.fromBincode(responseBytes);
 
-  print("Client sent: $clientSnapshot");
-  print("Server replied: $updatedSnapshot");
+  final reader = BincodeReader(responseBytes);
+  final updatedSnapshot = GameEntitySnapshot.empty()..decode(reader);
+
+  print('Client sent:    $message');
+  print('Server replied: $updatedSnapshot');
 
   expect(updatedSnapshot.id, equals(1));
   expect(updatedSnapshot.x, equals(100.0));
   expect(updatedSnapshot.y, equals(0.0));
   expect(updatedSnapshot.rotation, equals(315.0));
-  expect(updatedSnapshot.type, equals("ServerConfirmed-Player"));
+  expect(updatedSnapshot.type, equals('ServerConfirmed-Player'));
 }
 
 class Level4 implements BincodeCodable {
@@ -1165,16 +1157,13 @@ class Level4 implements BincodeCodable {
   Level4.empty() : value = 0;
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeU32(value);
-    return writer.toBytes();
+  void encode(BincodeWriter w) {
+    w.writeU32(value);
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    value = reader.readU32();
+  void decode(BincodeReader r) {
+    value = r.readU32();
   }
 
   @override
@@ -1188,16 +1177,13 @@ class Level3 implements BincodeCodable {
   Level3.empty() : child = Level4.empty();
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeNestedValueForFixed(child);
-    return writer.toBytes();
+  void encode(BincodeWriter w) {
+    w.writeNestedValueForFixed(child);
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    child = reader.readNestedObjectForFixed(Level4.empty());
+  void decode(BincodeReader r) {
+    child = r.readNestedObjectForFixed(Level4.empty());
   }
 
   @override
@@ -1211,16 +1197,13 @@ class Level2 implements BincodeCodable {
   Level2.empty() : child = Level3.empty();
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeNestedValueForFixed(child);
-    return writer.toBytes();
+  void encode(BincodeWriter w) {
+    w.writeNestedValueForFixed(child);
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    child = reader.readNestedObjectForFixed(Level3.empty());
+  void decode(BincodeReader r) {
+    child = r.readNestedObjectForFixed(Level3.empty());
   }
 
   @override
@@ -1234,16 +1217,13 @@ class Level1 implements BincodeCodable {
   Level1.empty() : child = Level2.empty();
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeNestedValueForFixed(child);
-    return writer.toBytes();
+  void encode(BincodeWriter w) {
+    w.writeNestedValueForFixed(child);
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    child = reader.readNestedObjectForFixed(Level2.empty());
+  void decode(BincodeReader r) {
+    child = r.readNestedObjectForFixed(Level2.empty());
   }
 
   @override
@@ -1253,7 +1233,6 @@ class Level1 implements BincodeCodable {
 void ultraInsaneCrazyTest() {
   final writer = BincodeWriter();
 
-  // 1) Mix of primitives
   writer.writeU8(0xAA);
   writer.writeU16(0x1234);
   writer.writeU32(0xDEADBEEF);
@@ -1261,28 +1240,25 @@ void ultraInsaneCrazyTest() {
   writer.writeF64(2.718281828);
   writer.writeBool(true);
 
-  // 2) Strings & optionals
   writer.writeString('Start');
   writer.writeOptionString(null);
   writer.writeOptionString('OptionHere');
 
-  // 3) Heterogeneous list: ints, strings, nested structs
   final heterogeneous = <Object>[42, 'Answer', Level4(4242)];
   writer.writeU64(heterogeneous.length);
   for (final element in heterogeneous) {
     if (element is int) {
-      writer.writeU8(0); // tag for int
+      writer.writeU8(0);
       writer.writeI32(element);
     } else if (element is String) {
-      writer.writeU8(1); // tag for string
+      writer.writeU8(1);
       writer.writeString(element);
     } else if (element is Level4) {
-      writer.writeU8(2); // tag for nested struct
+      writer.writeU8(2);
       writer.writeNestedValueForFixed(element);
     }
   }
 
-  // 4) Map from string to nested struct
   final nestedMap = {
     'first': Level1(Level2(Level3(Level4(1)))),
     'second': Level1(Level2(Level3(Level4(2)))),
@@ -1293,16 +1269,13 @@ void ultraInsaneCrazyTest() {
     (v) => writer.writeNestedValueForFixed(v),
   );
 
-  // 5) Trailing marker
   writer.writeString('END');
 
   final bytes = writer.toBytes();
   print('Ultra‑insane bytes: ${bytes.toList()}');
 
-  // --- Decode ---
   final reader = BincodeReader(bytes);
 
-  // 1) Primitives
   expect(reader.readU8(), equals(0xAA));
   expect(reader.readU16(), equals(0x1234));
   expect(reader.readU32(), equals(0xDEADBEEF));
@@ -1310,12 +1283,10 @@ void ultraInsaneCrazyTest() {
   expect(reader.readF64(), closeTo(2.718281828, 1e-12));
   expect(reader.readBool(), isTrue);
 
-  // 2) Strings & optionals
   expect(reader.readString(), equals('Start'));
   expect(reader.readOptionString(), isNull);
   expect(reader.readOptionString(), equals('OptionHere'));
 
-  // 3) Heterogeneous list
   final listLen = reader.readU64();
   final decodedHetero = <Object>[];
   for (var i = 0; i < listLen; i++) {
@@ -1338,7 +1309,6 @@ void ultraInsaneCrazyTest() {
   expect(decodedHetero[1], equals('Answer'));
   expect((decodedHetero[2] as Level4).value, equals(4242));
 
-  // 4) Map decode
   final mapLen = reader.readU64();
   final decodedMap = <String, Level1>{};
   for (var i = 0; i < mapLen; i++) {
@@ -1348,7 +1318,6 @@ void ultraInsaneCrazyTest() {
   expect(decodedMap['first']!.child.child.child.value, equals(1));
   expect(decodedMap['second']!.child.child.child.value, equals(2));
 
-  // 5) Trailing marker
   expect(reader.readString(), equals('END'));
 }
 
@@ -1366,18 +1335,15 @@ class Level4Ext implements BincodeCodable {
         name = '';
 
   @override
-  Uint8List toBincode() {
-    final w = BincodeWriter();
+  void encode(BincodeWriter w) {
     w.writeU32(value);
     w.writeBool(active);
     w.writeList<double>(metrics, (m) => w.writeF64(m));
     w.writeString(name);
-    return w.toBytes();
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final r = BincodeReader(bytes);
+  void decode(BincodeReader r) {
     value = r.readU32();
     active = r.readBool();
     metrics = r.readList(() => r.readF64());
@@ -1401,9 +1367,7 @@ class Level3Ext implements BincodeCodable {
         lookup = {};
 
   @override
-  Uint8List toBincode() {
-    final w = BincodeWriter();
-    // length‑prefix the nested block
+  void encode(BincodeWriter w) {
     w.writeNestedValueForCollection(primary);
     w.writeOptionNestedValueForCollection(optionalChild);
     w.writeMap<String, Level4Ext>(
@@ -1411,12 +1375,10 @@ class Level3Ext implements BincodeCodable {
       (k) => w.writeString(k),
       (v) => w.writeNestedValueForCollection(v),
     );
-    return w.toBytes();
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final r = BincodeReader(bytes);
+  void decode(BincodeReader r) {
     primary = r.readNestedObjectForCollection(Level4Ext.empty());
     optionalChild =
         r.readOptionNestedObjectForCollection(() => Level4Ext.empty());
@@ -1443,17 +1405,14 @@ class Level2Ext implements BincodeCodable {
         extraLeaf = Level4Ext.empty();
 
   @override
-  Uint8List toBincode() {
-    final w = BincodeWriter();
+  void encode(BincodeWriter w) {
     w.writeNestedValueForCollection(main);
     w.writeList<Level3Ext>(extras, (e) => w.writeNestedValueForCollection(e));
     w.writeNestedValueForCollection(extraLeaf);
-    return w.toBytes();
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final r = BincodeReader(bytes);
+  void decode(BincodeReader r) {
     main = r.readNestedObjectForCollection(Level3Ext.empty());
     extras =
         r.readList(() => r.readNestedObjectForCollection(Level3Ext.empty()));
@@ -1477,8 +1436,7 @@ class Level1Ext implements BincodeCodable {
         tags = [];
 
   @override
-  Uint8List toBincode() {
-    final w = BincodeWriter();
+  void encode(BincodeWriter w) {
     w.writeNestedValueForCollection(root);
     w.writeMap<int, Level2Ext>(
       registry,
@@ -1486,12 +1444,10 @@ class Level1Ext implements BincodeCodable {
       (v) => w.writeNestedValueForCollection(v),
     );
     w.writeList<String>(tags, (t) => w.writeString(t));
-    return w.toBytes();
   }
 
   @override
-  void fromBincode(Uint8List bytes) {
-    final r = BincodeReader(bytes);
+  void decode(BincodeReader r) {
     root = r.readNestedObjectForCollection(Level2Ext.empty());
     registry = r.readMap<int, Level2Ext>(
       () => r.readU32(),
@@ -1541,29 +1497,29 @@ void deepComplexTest() {
   final tags = ['tag1', 'tag2', 'tag3'];
   final lvl1 = Level1Ext(lvl2Root, registry, tags);
 
-  // --- Encode ---
-  final bytes = lvl1.toBincode();
+  final writer = BincodeWriter();
+  lvl1.encode(writer);
+  final bytes = writer.toBytes();
 
   print('Deep Complex Bytes (${bytes.length}): ${bytes.toList()}');
 
-  // --- Decode ---
-  final decoded = Level1Ext.empty()..fromBincode(bytes);
+  final decoded = Level1Ext.empty();
+  decoded.decode(BincodeReader(bytes));
 
-  print('root.main.primary: ${decoded.root.main.primary}');
+  print('root.main.primary:     ${decoded.root.main.primary}');
   print('root.main.optionalChild: ${decoded.root.main.optionalChild}');
-  print('root.main.lookup: ${decoded.root.main.lookup}\n');
+  print('root.main.lookup:      ${decoded.root.main.lookup}\n');
 
-  print('root.extras[0]: ${decoded.root.extras[0]}');
-  print('root.extras[1]: ${decoded.root.extras[1]}\n');
+  print('root.extras[0]:        ${decoded.root.extras[0]}');
+  print('root.extras[1]:        ${decoded.root.extras[1]}\n');
 
-  print('root.extraLeaf: ${decoded.root.extraLeaf}\n');
+  print('root.extraLeaf:        ${decoded.root.extraLeaf}\n');
 
-  print('registry[1]: ${decoded.registry[1]}');
-  print('registry[2]: ${decoded.registry[2]}\n');
+  print('registry[1]:           ${decoded.registry[1]}');
+  print('registry[2]:           ${decoded.registry[2]}\n');
 
-  print('tags: ${decoded.tags}\n');
+  print('tags:                  ${decoded.tags}\n');
 
-  // --- Verify ---
   expect(decoded.root.main.primary.value, equals(10));
   expect(decoded.root.main.primary.active, isTrue);
   expect(decoded.root.main.primary.metrics, equals([1.1, 2.2]));
@@ -1581,11 +1537,418 @@ void deepComplexTest() {
   expect(decoded.root.extraLeaf.value, equals(70));
   expect(decoded.root.extraLeaf.name, equals('Leaf'));
 
-  // Registry
   expect(decoded.registry.length, equals(2));
   final reg1 = decoded.registry[1]!;
   expect(reg1.main.primary.value, equals(10));
   expect(decoded.registry[2]!.main.primary.value, equals(0));
 
   expect(decoded.tags, equals(tags));
+}
+
+class SimplePair implements BincodeCodable {
+  final int a, b;
+  SimplePair(this.a, this.b);
+  SimplePair.empty()
+      : a = 0,
+        b = 0;
+
+  @override
+  void encode(BincodeWriter w) {
+    w
+      ..writeU8(a)
+      ..writeU16(b);
+  }
+
+  @override
+  void decode(BincodeReader r) {
+    throw UnimplementedError();
+  }
+}
+
+class BytesOnly implements BincodeCodable {
+  final Uint8List payload;
+  BytesOnly(this.payload);
+  @override
+  void encode(BincodeWriter w) => w.writeBytes(payload);
+  @override
+  void decode(BincodeReader r) => throw UnimplementedError();
+}
+
+class DummyData implements BincodeCodable {
+  int value;
+  DummyData(this.value);
+  DummyData.empty() : value = 0;
+
+  @override
+  void encode(BincodeWriter w) {
+    w.writeU32(value);
+  }
+
+  @override
+  void decode(BincodeReader r) {
+    value = r.readU32();
+  }
+
+  @override
+  String toString() => 'DummyData($value)';
+}
+
+void writeReadNestedCollectionTest() {
+  final original = DummyData(999);
+  final writer = BincodeWriter();
+  writer.writeNestedValueForCollection(original);
+
+  final bytes = writer.toBytes();
+  final reader = BincodeReader(bytes);
+  final decoded = reader.readNestedObjectForCollection(DummyData.empty());
+
+  expect(decoded.value, equals(999),
+      reason: 'readNestedObjectForCollection should correctly decode payload');
+}
+
+void writeReadOptionalNestedCollectionTest() {
+  final present = DummyData(42);
+  final absent = null;
+
+  final writer = BincodeWriter();
+  writer.writeOptionNestedValueForCollection(present);
+  writer.writeOptionNestedValueForCollection(absent);
+
+  final reader = BincodeReader(writer.toBytes());
+
+  final decodedPresent =
+      reader.readOptionNestedObjectForCollection(() => DummyData.empty());
+  final decodedAbsent =
+      reader.readOptionNestedObjectForCollection(() => DummyData.empty());
+
+  expect(decodedPresent, isNotNull);
+  expect(decodedPresent!.value, equals(42));
+  expect(decodedAbsent, isNull);
+}
+
+void encodeToFileSyncTest() {
+  final path = 'test_output.bin';
+  final data = DummyData(123456);
+
+  BincodeWriter.encodeToFileSync(data, path);
+
+  final fileBytes = File(path).readAsBytesSync();
+  final decoded = DummyData.empty();
+  decoded.decode(BincodeReader(fileBytes));
+
+  expect(decoded.value, equals(123456));
+
+  File(path).deleteSync();
+}
+
+void encodeToSinkTest() async {
+  final data = DummyData(2024);
+  final collected = <int>[];
+
+  final controller = StreamController<List<int>>();
+  final sink = IOSink(controller.sink);
+
+  controller.stream.listen(collected.addAll);
+
+  final writer = BincodeWriter();
+  await writer.encodeToSink(data, sink);
+  await sink.close();
+  await controller.close();
+
+  final resultBytes = Uint8List.fromList(collected);
+  final decoded = DummyData.empty();
+  decoded.decode(BincodeReader(resultBytes));
+
+  expect(decoded.value, equals(2024),
+      reason: 'encodeToSink should write valid binary data to IOSink');
+}
+
+class Vec3 implements BincodeCodable {
+  double x, y, z;
+  Vec3(this.x, this.y, this.z);
+  Vec3.empty()
+      : x = 0,
+        y = 0,
+        z = 0;
+
+  @override
+  void encode(BincodeWriter w) {
+    w.writeF32(x);
+    w.writeF32(y);
+    w.writeF32(z);
+  }
+
+  @override
+  void decode(BincodeReader r) {
+    x = r.readF32();
+    y = r.readF32();
+    z = r.readF32();
+  }
+
+  @override
+  String toString() => 'Vec3(x: $x, y: $y, z: $z)';
+}
+
+void isValidBincodeTest() {
+  final goodVec = Vec3(1.0, 2.0, 3.0);
+  final writer = BincodeWriter();
+  goodVec.encode(writer);
+  final goodBytes = writer.toBytes();
+
+  final badBytes = goodBytes.sublist(0, goodBytes.length - 1);
+
+  final result1 = BincodeReader.isValidBincode(goodBytes, Vec3.empty());
+  final result2 = BincodeReader.isValidBincode(badBytes, Vec3.empty());
+
+  expect(result1, isTrue, reason: "Should successfully validate Vec3 bytes");
+  expect(result2, isFalse, reason: "Truncated Vec3 should fail validation");
+}
+
+void decodeFixedTest() {
+  final original = Vec3(3.0, -2.0, 5.5);
+  final bytes = BincodeWriter.encode(original);
+
+  final decoded = BincodeReader.decodeFixed(bytes, Vec3.empty());
+
+  expect(decoded.x, closeTo(3.0, 1e-6));
+  expect(decoded.y, closeTo(-2.0, 1e-6));
+  expect(decoded.z, closeTo(5.5, 1e-6));
+}
+
+class User implements BincodeCodable {
+  String name;
+  List<int> scores;
+
+  User(this.name, this.scores);
+  User.empty()
+      : name = '',
+        scores = [];
+
+  @override
+  void encode(BincodeWriter w) {
+    w.writeString(name);
+    w.writeList(scores, (s) => w.writeU32(s));
+  }
+
+  @override
+  void decode(BincodeReader r) {
+    name = r.readString();
+    scores = r.readList(() => r.readU32());
+  }
+
+  @override
+  String toString() => 'User(name: $name, scores: $scores)';
+}
+
+void decodeDynamicTest() {
+  final original = User("Alice", [10, 20, 30]);
+  final bytes = BincodeWriter.encode(original);
+
+  final result = BincodeReader.decode(bytes, User.empty());
+
+  expect(result.name, equals("Alice"));
+  expect(result.scores, equals([10, 20, 30]));
+}
+
+void fromBufferTest() {
+  final writer = BincodeWriter();
+  writer.writeU64(123456789);
+  final buffer = writer.toBytes().buffer;
+
+  final reader = BincodeReader.fromBuffer(buffer);
+  final value = reader.readU64();
+
+  expect(value, equals(123456789));
+}
+
+void stripNullsTest() {
+  const raw = 'Hello\x00\x00\x00';
+  final clean = BincodeReader.stripNulls(raw);
+
+  expect(clean, equals('Hello'));
+}
+
+void measureListByteSizeTest() {
+  final writer = BincodeWriter();
+  writer.writeU64(3);
+  writer.writeU32(10);
+  writer.writeU32(20);
+  writer.writeU32(30);
+
+  final bytes = writer.toBytes();
+  final size = BincodeReader.measureListByteSize(bytes, 4);
+
+  expect(size, equals(20));
+}
+
+void peekLengthTest() {
+  final writer = BincodeWriter();
+  writer.writeU64(42);
+  final bytes = writer.toBytes();
+
+  final peeked = BincodeReader.peekLength(bytes);
+  expect(peeked, equals(42));
+}
+
+void hasBytesTest() {
+  final writer = BincodeWriter();
+  writer.writeU32(0xDEADBEEF);
+  final bytes = writer.toBytes();
+
+  final reader = BincodeReader(bytes);
+  expect(reader.hasBytes(4), isTrue);
+  expect(reader.hasBytes(5), isFalse);
+
+  reader.readU32();
+  expect(reader.hasBytes(1), isFalse);
+}
+
+void isAlignedTest() {
+  final writer = BincodeWriter();
+  writer.writeU8(0x01);
+  writer.writeU8(0x02);
+  writer.writeU8(0x03);
+  writer.writeU8(0x04);
+  final reader = BincodeReader(writer.toBytes());
+
+  expect(reader.isAligned(1), isTrue);
+  expect(reader.isAligned(2), isTrue);
+  expect(reader.isAligned(4), isTrue);
+
+  reader.seek(3);
+  expect(reader.isAligned(2), isFalse);
+  expect(reader.isAligned(4), isFalse);
+}
+
+void alignTest() {
+  final writer = BincodeWriter();
+  writer.writeU8(0x11);
+  writer.writeU8(0x22);
+  writer.writeU8(0x33);
+  writer.writeU8(0x44);
+  writer.writeU8(0x55);
+  final reader = BincodeReader(writer.toBytes());
+
+  reader.seek(3);
+  reader.align(4);
+  expect(reader.position, equals(4));
+
+  expect(reader.readU8(), equals(0x55));
+}
+
+void skipMethodsTest() {
+  final writer = BincodeWriter();
+  writer.writeU8(1);
+  writer.writeU16(0x0203);
+  writer.writeU32(0x04050607);
+  writer.writeU64(0x08090A0B0C0D0E0F);
+  writer.writeF32(1.23);
+  writer.writeF64(6.28);
+
+  final reader = BincodeReader(writer.toBytes());
+
+  reader.skipU8();
+  expect(reader.position, equals(1));
+
+  reader.skipU16();
+  expect(reader.position, equals(3));
+
+  reader.skipU32();
+  expect(reader.position, equals(7));
+
+  reader.skipU64();
+  expect(reader.position, equals(15));
+
+  reader.skipF32();
+  expect(reader.position, equals(19));
+
+  reader.skipF64();
+  expect(reader.position, equals(27));
+}
+
+void peekMethodsTest() {
+  final writer = BincodeWriter();
+
+  writer.writeU8(0x01);
+  writer.writeU16(0x0203);
+  writer.writeU32(0x04050607);
+  writer.writeU64(0x08090A0B0C0D0E0F);
+  writer.writeF32(1.23);
+  writer.writeF64(6.28);
+
+  final bytes = writer.toBytes();
+
+  print("Written bytes: ${bytes.toList()}");
+
+  final reader = BincodeReader(bytes);
+
+  final initialPos = reader.position;
+
+  reader.peekSession(() {
+    expect(reader.readU8(), equals(0x01));
+    expect(reader.readU16(), equals(0x0203));
+    expect(reader.readU32(), equals(0x04050607));
+    expect(reader.readU64(), equals(0x08090A0B0C0D0E0F));
+    expect(reader.readF32(), closeTo(1.23, 1e-6));
+    expect(reader.readF64(), equals(6.28));
+  });
+
+  expect(reader.position, equals(initialPos));
+}
+
+void skipOptionTest() {
+  final writer = BincodeWriter();
+
+  writer.writeOptionBool(true);
+  writer.writeOptionBool(false);
+  writer.writeOptionBool(null);
+
+  final bytes = writer.toBytes();
+
+  final reader = BincodeReader(bytes);
+
+  final initialPos = reader.position;
+
+  reader.skipOption(() {
+    expect(reader.readBool(), equals(true));
+  });
+  expect(reader.position, greaterThan(initialPos));
+
+  reader.skipOption(() {
+    expect(reader.readBool(), equals(false));
+  });
+  expect(reader.position, greaterThan(initialPos));
+
+  reader.skipOption(() {});
+  expect(reader.position, greaterThan(initialPos));
+
+  writer.resetWith(128);
+  writer.writeOptionU8(10);
+  writer.writeOptionU8(null);
+
+  final bytes2 = writer.toBytes();
+  final reader2 = BincodeReader(bytes2);
+
+  reader2.skipOption(() {
+    expect(reader2.readU8(), equals(10));
+  });
+  expect(reader2.position, greaterThan(initialPos));
+
+  reader2.skipOption(() {});
+  expect(reader2.position, greaterThan(initialPos));
+
+  writer.resetWith(128);
+  writer.writeOptionU16(300);
+  writer.writeOptionU16(null);
+
+  final bytes3 = writer.toBytes();
+  final reader3 = BincodeReader(bytes3);
+
+  reader3.skipOption(() {
+    expect(reader3.readU16(), equals(300));
+  });
+  expect(reader3.position, greaterThan(initialPos));
+
+  reader3.skipOption(() {});
+  expect(reader3.position, greaterThan(initialPos));
 }

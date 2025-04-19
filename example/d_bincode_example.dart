@@ -1,3 +1,23 @@
+// Copyright (c) 2025 Binurie
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 import 'dart:typed_data';
 
 import 'package:d_bincode/d_bincode.dart';
@@ -10,23 +30,20 @@ class NestedData implements BincodeCodable {
   NestedData.create(this.nestedId, this.nestedName);
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeI32(nestedId); // i32
-    writer.writeString(nestedName); // String (variable length!)
-    return writer.toBytes();
-  }
-
-  @override
-  void fromBincode(Uint8List bytes, {bool unsafe = false}) {
-    final reader = BincodeReader(bytes, unsafe: unsafe);
-    nestedId = reader.readI32();
-    nestedName = reader.readString();
-  }
-
-  @override
   String toString() {
     return 'NestedData(id: $nestedId, name: "$nestedName")';
+  }
+  
+  @override
+  void decode(BincodeReader r) {
+    nestedId = r.readI32();
+    nestedName = r.readString();
+  }
+  
+  @override
+  void encode(BincodeWriter w) {
+     w.writeI32(nestedId); // i32
+    w.writeString(nestedName); // String (variable length!)
   }
 }
 
@@ -39,25 +56,21 @@ class FixedStruct implements BincodeCodable {
   FixedStruct.create(this.valueA, this.valueB, this.flagC);
 
   @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    // ONLY fixed-size writes inside here
-    writer.writeI32(valueA);
-    writer.writeF64(valueB);
-    writer.writeBool(flagC);
-    return writer.toBytes();
-  }
-
+  String toString() => 'Fixed(A:$valueA, B:$valueB, C:$flagC)';
+  
   @override
-  void fromBincode(Uint8List bytes) {
-    final reader = BincodeReader(bytes);
-    valueA = reader.readI32();
+  void decode(BincodeReader reader) {
+     valueA = reader.readI32();
     valueB = reader.readF64();
     flagC = reader.readBool();
   }
-
+  
   @override
-  String toString() => 'Fixed(A:$valueA, B:$valueB, C:$flagC)';
+  void encode(BincodeWriter writer) {
+    writer.writeI32(valueA);
+    writer.writeF64(valueB);
+    writer.writeBool(flagC);
+  }
 }
 
 // --- Main Data Class (Comprehensive Example) ---
@@ -130,10 +143,7 @@ class MyData implements BincodeCodable {
   // --- BincodeCodable Implementation ---
 
   @override
-  Uint8List toBincode({bool unchecked = false, int initialCapacity = 1024}) {
-    final writer =
-        BincodeWriter(initialCapacity: initialCapacity, unchecked: unchecked);
-
+  void encode(BincodeWriter writer) {
     // --- Write Primitives ---
     writer.writeU8(myU8); // u8
     writer.writeU16(myU16); // u16
@@ -168,9 +178,6 @@ class MyData implements BincodeCodable {
     writer.writeOptionFixedString(myOptionFixedString, 20); // Option<[u8; 20]>
     writer.writeOptionFixedString(
         myCleanOptionFixedString, 24); // Option<[u8; 24]>
-
-    // --- Write Specific Optional Structures ---
-    writer.writeOptionF32Triple(myOptionF32Triple); // Option<[f32; 3]>
 
     // --- Write Generic Collections ---
     writer.writeList<int>(
@@ -211,13 +218,10 @@ class MyData implements BincodeCodable {
       // u64 length before
       writer.writeNestedValueForFixed(item); // T element
     });
-
-    return writer.toBytes();
   }
 
   @override
-  void fromBincode(Uint8List bytes, {bool unsafe = false}) {
-    final reader = BincodeReader(bytes, unsafe: unsafe);
+  void decode(BincodeReader reader) {
 
     // --- Read Primitives ---
     myU8 = reader.readU8();
@@ -253,8 +257,6 @@ class MyData implements BincodeCodable {
     myOptionFixedString = reader.readOptionFixedString(20);
     myCleanOptionFixedString = reader.readCleanOptionFixedString(24);
 
-    // --- Read Specific Optional Structures ---
-    myOptionF32Triple = reader.readOptionF32Triple();
 
     // --- Read Generic Collections ---
     myGenericList = reader.readList<int>(() => reader.readU32());
@@ -291,11 +293,6 @@ class MyData implements BincodeCodable {
       // Use ForFixed to read raw bytes (size calculated from FixedStruct())
       return reader.readNestedObjectForFixed<FixedStruct>(FixedStruct());
     });
-
-    if (reader.remainingBytes() > 0 && !unsafe) {
-      print(
-          "Warning: ${reader.remainingBytes()} bytes remaining after decoding MyData");
-    }
   }
 
   @override
@@ -370,14 +367,16 @@ void main() async {
 
   // 2. Serialize the data to bytes
   print("Original Data: $originalData");
-  Uint8List bincodeBytes = originalData.toBincode();
-  print("\nSerialized ${bincodeBytes.length} bytes: $bincodeBytes");
+  final writer = BincodeWriter();
+  originalData.encode(writer);
+  final raw = writer.toBytes();
+  print("\nSerialized ${raw.length} bytes: $raw");
 
   print("\nGoing to Rust, Dart or anyother other language.....");
 
   // 3. Deserialize the bytes back into a new instance
-  final decodedData = MyData();
-  decodedData.fromBincode(bincodeBytes);
+  final reader = BincodeReader(raw);
+  final decodedData = MyData()..decode(reader);
   print("\nDecoded Data: $decodedData");
 
   // 4. Verify
@@ -409,11 +408,6 @@ void main() async {
   assert(decodedData.myOptionString == originalData.myOptionString);
   assert(decodedData.myOptionFixedString == originalData.myOptionFixedString);
   assert(decodedData.myCleanOptionFixedString == "CleanOptionalFixed");
-  // Specific Optional
-  assert(decodedData.myOptionF32Triple != null &&
-      originalData.myOptionF32Triple != null);
-  assert(decodedData.myOptionF32Triple!.length == 3);
-  assert(decodedData.myOptionF32Triple![1] == 2.5);
   // Generic Collections
   assert(decodedData.myGenericList.length == 3 &&
       decodedData.myGenericList[1] == 20);

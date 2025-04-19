@@ -1,9 +1,22 @@
-// ============================================================
-// Disclaimer: This source code is provided "as is", without any
-// warranty of any kind, express or implied, including but not
-// limited to the warranties of merchantability or fitness for
-// a particular purpose.
-// ============================================================
+// Copyright (c) 2025 Binurie
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 import 'dart:typed_data';
 
@@ -75,13 +88,12 @@ abstract class BincodeWriterBuilder {
   /// Writes a list of bytes [bytes] to the output.
   void writeBytes(List<int> bytes);
 
-  /// Writes a length‑prefixed string [value] using the specified [encoding].
+  /// Writes a length‑prefixed string [value] using utf8 [encoding].
   ///
   /// The method first writes the length of the encoded string as an unsigned 64‑bit integer,
   /// followed by the encoded bytes.
-  /// The default [encoding] is UTF‑8.
-  void writeString(String value,
-      [StringEncoding encoding = StringEncoding.utf8]);
+  /// [encoding] is UTF‑8.
+  void writeString(String s);
 
   /// Writes a fixed‑length string [value], padding with zeros if necessary.
   ///
@@ -126,16 +138,10 @@ abstract class BincodeWriterBuilder {
   /// Writes an optional 64‑bit floating‑point [value].
   void writeOptionF64(double? value);
 
-  /// Writes an optional 3‑element Float32List [vec3].
-  ///
-  /// Expects a [Float32List] of exactly 3 elements, or null.
-  void writeOptionF32Triple(Float32List? vec3);
-
   /// Writes an optional string [value] using the specified [encoding].
   ///
   /// Writes a tag (1 for Some, 0 for None) followed by the string (if present).
-  void writeOptionString(String? value,
-      [StringEncoding encoding = StringEncoding.utf8]);
+  void writeOptionString(String? value);
 
   /// Writes an optional fixed‑length string [value] of given [length].
   void writeOptionFixedString(String? value, int length);
@@ -185,22 +191,15 @@ abstract class BincodeWriterBuilder {
   /// Writes a list of 64‑bit floating‑point values [values].
   void writeFloat64List(List<double> values);
 
-  /// Writes a nested encodable [nested] object.
-  ///
-  /// The object is serialized into bytes (with its length) and then written.
-  void writeNested(BincodeEncodable nested);
+ void writeNestedValueForCollection(BincodeCodable value);
 
-  /// Writes an optional nested encodable object [nested].
-  ///
-  /// Writes a tag (1 for Some, 0 for None) and, if not null, serializes the object.
-  void writeOptionNested(BincodeEncodable? nested);
+ void writeNestedValueForFixed(BincodeCodable value);
+
+ void writeOptionNestedValueForCollection(BincodeCodable? value) ;
+
+ void writeOptionNestedValueForFixed(BincodeCodable? value);
 
   // -- Output Methods --
-
-  /// Asynchronously writes the current buffer content (up to the current position) to the file at [path].
-  ///
-  /// Only the used portion of the buffer is written, not the full allocated size.
-  Future<void> toFile(String path);
 
   /// Returns the written portion of the buffer as a [Uint8List].
   Uint8List toBytes();
@@ -285,22 +284,18 @@ abstract class BincodeReaderBuilder {
   /// Reads [count] bytes and returns them as a Uint8List.
   Uint8List readRawBytes(int count);
 
-  /// Reads a length‑prefixed string using the specified [encoding].
-  ///
-  /// The string length is determined by a preceding unsigned 64‑bit integer.
-  /// The default [encoding] is UTF‑8.
-  String readString([StringEncoding encoding = StringEncoding.utf8]);
+  /// Reads a length‑prefixed string using utf8.
+  String readString();
 
   /// Reads a fixed‑length string from the current position.
   ///
   /// [length] specifies the number of bytes to read.
-  /// The [encoding] parameter determines how the bytes are interpreted.
-  String readFixedString(int length, {StringEncoding encoding});
+  String readFixedString(int length);
 
   /// Reads a fixed‑length string and trims any trailing zero bytes.
   ///
   /// This is useful when strings are padded with zero bytes.
-  String readCleanFixedString(int length, {StringEncoding encoding});
+  String readCleanFixedString(int length);
 
   // -- Optional Read Methods --
 
@@ -342,20 +337,15 @@ abstract class BincodeReaderBuilder {
   /// Reads an optional string using the specified [encoding] (default is UTF‑8).
   ///
   /// Returns `null` if the option tag indicates the value is not present.
-  String? readOptionString([StringEncoding encoding = StringEncoding.utf8]);
+  String? readOptionString();
 
   /// Reads an optional fixed‑length string.
   ///
   /// Returns the raw fixed‑length string or `null` if not present.
-  String? readOptionFixedString(int length, {StringEncoding encoding});
+  String? readOptionFixedString(int length);
 
   /// Reads a fixed‑length string and trims trailing zero bytes, returning `null` if not present.
-  String? readCleanOptionFixedString(int length, {StringEncoding encoding});
-
-  /// Reads an optional 3‑element [Float32List].
-  ///
-  /// If the option tag is 0, it consumes 13 bytes (1 tag + 12 zeros) and returns null.
-  Float32List? readOptionF32Triple();
+  String? readCleanOptionFixedString(int length);
 
   // -- Collection Read Methods --
 
@@ -404,16 +394,6 @@ abstract class BincodeReaderBuilder {
   List<double> readFloat64List();
 
 // -- Nested Object Reading --
-
-  /// **Deprecated:** Use [readNestedObjectForCollection] or [readNestedObjectForFixed] instead.
-  @Deprecated(
-      'Use readNestedObjectForCollection or readNestedObjectForFixed instead')
-  T readNestedObject<T extends BincodeDecodable>(T instance);
-
-  /// **Deprecated:** Use [readOptionNestedObjectForCollection] or [readOptionNestedObjectForFixed] instead.
-  @Deprecated(
-      'Use readOptionNestedObjectForCollection or readOptionNestedObjectForFixed instead')
-  T? readOptionNestedObject<T extends BincodeDecodable>(T Function() creator);
 
   /// Reads a nested object that was written with a length prefix (for collection elements).
   T readNestedObjectForCollection<T extends BincodeDecodable>(T instance);

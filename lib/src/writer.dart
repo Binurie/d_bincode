@@ -1,516 +1,692 @@
-// ============================================================
-// Disclaimer: This source code is provided "as is", without any
-// warranty of any kind, express or implied, including but not
-// limited to the warranties of merchantability or fitness for
-// a particular purpose.
-// ============================================================
+// Copyright (c) 2025 Binurie
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'builder.dart';
 import 'codable.dart';
-import 'enums.dart';
-import 'exception/exception.dart';
-import 'internal_utils/byte_data_wrapper.dart';
-import 'internal_utils/utils.dart';
 
-/// A low-level binary writer that encodes structured data in [Bincode] format.
+/// A fast, flexible binary serializer for Rust-compatible Bincode data.
 ///
-/// This class provides methods to write primitive types, strings, optionals,
-/// collections, and nested objects into an internal byte buffer.
-/// In normal mode (`unchecked = false`), the buffer expands automatically as needed, ensuring safety.
-/// In `unchecked = true` mode, buffer expansion and integer range checks are
-/// disabled for potential performance gains, but this risks runtime [RangeError] exceptions
-/// if the initial buffer capacity is exceeded during writes.
+/// `BincodeWriter` provides low-level control over binary encoding of Dart objects
+/// using the same layout as Rust’s `bincode` format. It is optimized for
+/// performance, alignment correctness, and composability with other low-level APIs.
+class BincodeWriter implements BincodeWriterBuilder {
+  // — internal buffer and cursors —
+  Uint8List _bytes;
+  final Uint8List _convBytes = Uint8List(8);
+  late final Float32List _conv32 = Float32List.view(_convBytes.buffer);
+  late final Float64List _conv64 = Float64List.view(_convBytes.buffer);
+
+  int _pos = 0; // write cursor
+  int _length = 0; // high‑water mark
+  int _capacity; // buffer size
+
+  /// A fast, flexible binary serializer for Rust-compatible Bincode data.
 ///
-/// ## Features
-/// - Automatic buffer resizing (only when `unchecked = false`)
-/// - Seek and rewind support
-/// - Support for optional types and nested objects
-/// - Little‑endian encoding for compact output
-/// - Ability to write to file using [toFile()]
+/// `BincodeWriter` provides low-level control over binary encoding of Dart objects
+/// using the same layout as Rust’s `bincode` format. It is optimized for
+/// performance, alignment correctness, and composability with other low-level APIs.
 ///
-/// ## Example
+/// ### Core Capabilities
+/// - Encodes primitive values (`u8`, `i32`, `f64`, etc.) with little-endian layout
+/// - Writes Rust-style `Option<T>` types using 1-byte tags
+/// - Supports strings (length-prefixed or fixed-length)
+/// - Writes nested structs using fixed-size or collection-style layout
+/// - Serializes `Vec<T>` and `HashMap<K, V>` as sequences with length prefix
+///
+/// ### Performance & Safety
+/// - Uses a dynamically growing internal buffer (default 128 bytes, expandable)
+/// - Avoids allocations for primitives and numeric arrays when possible
+/// - Uses `TypedData.view` for bulk writes (e.g. `Float64List`) when input is typed
+/// - `reserve()` allows manual preallocation for large payloads
+/// - Reusable: call `reset()` or `rewind()` to reuse the same writer instance
+///
+/// ### Memory Behavior
+/// - Zero-copy for writing raw views like `Uint8List`, `Int16List`, etc.
+/// - Scalar types and strings are encoded by value, with no reference retained
+/// - Temporary shared buffer is used for float conversion (no allocation per write)
+///
+/// ### Example
 /// ```dart
 /// final writer = BincodeWriter();
-/// writer.writeU32(42);
+/// writer.writeU8(1);
+/// writer.writeF64(3.14);
 /// writer.writeString("hello");
-/// await writer.toFile('output.bin');
-///
-/// // Faster usage with guaranteed capacity (requires care)
-/// final fastWriter = BincodeWriter(initialCapacity: 1024, unchecked: true);
-/// // ... write data known to fit within 1024 bytes ...
-/// final bytes = fastWriter.toBytes();
+/// final encoded = writer.toBytes(); // Uint8List of written data
 /// ```
-class BincodeWriter implements BincodeWriterBuilder {
-  late ByteDataWrapper _wrapper;
-  int _capacity;
-  int _position = 0;
-  final bool unchecked;
+///
+/// ### Supported Rust Layouts
+/// - `Vec<T>` → `[u64 length][T, T, ...]`
+/// - `Option<T>` → `[0]` if null, `[1][T]` if value exists
+/// - Structs → fixed layout or collection-style nested with length prefix
+  BincodeWriter({
+    int initialCapacity = 128,
+    @Deprecated('Use unchecked') bool? unsafe,
+  })  : assert(initialCapacity > 0),
+        _capacity = initialCapacity,
+        _bytes = Uint8List(initialCapacity);
 
-  /// Creates a new [BincodeWriter] with an optional [initialCapacity] (in bytes).
+  /// Resets the writer to an empty state, clearing any previously written bytes.
   ///
-  /// The [initialCapacity] parameter determines the starting size of the internal buffer.
-  /// Choose a size large enough for typical data to minimize reallocations in safe mode,
-  /// or large enough to hold *all* expected data if using unchecked mode.
+  /// After calling, both [position] and [getBytesWritten] will return 0.
   ///
-  /// Behavior depends on the [unchecked] flag:
-  ///
-  /// - **`unchecked = false` (Default, Safe Mode):**
-  ///   - Buffer capacity is checked before writes; the buffer grows automatically if needed.
-  ///   - **More safety:** Since auto growing prevents out-of-range value errors and ensures sufficient buffer space, avoiding runtime write errors.
-  ///   - Incurs overhead for checks and memory reallocations/copying.
-  ///
-  /// - **`unchecked = true` (Faster, Requires Care):**
-  ///   - Integer range checks AND buffer capacity checks (`_ensureCapacity`) are **skipped**.
-  ///   - The buffer **WILL NOT grow** beyond the provided [initialCapacity].
-  ///   - **Use this mode only if:**
-  ///     1. Performance is needed for a specific, measured bottleneck.
-  ///     2. You can **guarantee** (e.g., by pre-calculating size or using a sufficiently large overestimate) that the provided [initialCapacity] is large enough for the entire serialization process under all conditions.
-  BincodeWriter({int initialCapacity = 128, this.unchecked = false})
-      : _capacity = initialCapacity {
-    if (initialCapacity <= 0) {
-      throw ArgumentError.value(
-          initialCapacity, 'initialCapacity', 'must be positive');
-    }
-    _wrapper = ByteDataWrapper.allocate(_capacity);
+  /// #### Example
+  /// ```dart
+  /// final w = BincodeWriter();
+  /// w.writeU8(1);
+  /// w.writeU8(2);
+  /// print(w.getBytesWritten()); // 2
+  /// w.reset();
+  /// print(w.getBytesWritten()); // 0
+  /// print(w.position);         // 0
+  /// ```
+  void reset() {
+    _pos = 0;
+    _length = 0;
   }
 
-  /// Moves the write cursor by [offset] bytes relative to the current [position].
-  @override
-  void seek(int offset) {
-    _wrapper.position += offset;
-  }
-
-  /// Returns the current write cursor position within the buffer.
-  @override
-  int get position => _wrapper.position;
-
-  /// Provides access to the raw underlying [ByteBuffer].
-  ByteBuffer get buffer => _wrapper.buffer;
-
-  /// Returns the total number of bytes logically written to the buffer.
-  ///
-  /// This represents the highest position reached by any write operation,
-  /// effectively the current "size" of the serialized data.
-  int getBytesWritten() => _position;
-
-  /// Sets the write cursor to an absolute byte position [value].
-  @override
-  set position(int value) {
-    _wrapper.position = value;
-  }
-
-  /// Resets the write cursor position to the beginning of the buffer (index 0).
-  ///
-  /// Does not change the buffer content or the logical size reported by [getBytesWritten].
-  @override
-  void rewind() {
-    _wrapper.position = 0;
-  }
-
-  /// Moves the write cursor to the end of the logically written data.
-  ///
-  /// Sets the cursor [position] to the value returned by [getBytesWritten].
-  /// Useful after seeking backwards if you want to append new data.
-  @override
-  void skipToEnd() {
-    // Sets cursor to the high-water mark
-    _wrapper.position = _position;
-  }
-
-  /// Sets the write cursor to the absolute byte position [offset].
-  ///
-  /// This is an alias for setting the [position] property directly.
-  @override
-  void seekTo(int offset) {
-    _wrapper.position = offset;
-  }
-
-  // --- Internal Buffer Management ---
-
-  /// Ensures that there is at least [neededBytes] available starting from the current position.
-  ///
-  /// If the current buffer does not have enough space, [_grow] is called to expand it.
-  /// **This method is NOT called if `unchecked` is true.**
-  void _ensureCapacity(int neededBytes) {
-    final currentPos = _wrapper.position;
-    if (currentPos + neededBytes > _capacity) {
-      _grow(currentPos + neededBytes);
-    }
-  }
-
-  /// Expands the internal buffer so that its capacity is at least [minCapacity] bytes.
-  ///
-  /// The new capacity is chosen by doubling the current capacity, yet never lower than [minCapacity].
-  /// **This method is NEVER called if `unchecked` is true.**
-  void _grow(int minCapacity) {
-    final oldPosition = _wrapper.position;
-    final newCapacity = (_capacity * 2).clamp(minCapacity, minCapacity * 2);
-    final newWrapper = ByteDataWrapper.allocate(newCapacity);
-    final oldBytesView = _wrapper.buffer.asUint8List(0, _position);
-    newWrapper.writeBytes(oldBytesView);
-
-    _wrapper = newWrapper;
+  /// Resets the writer and initializes it with a new buffer of the provided size.
+  /// The position and the bytes written are reset, and the writer is ready to write new data.
+  void resetWith(int newCapacity) {
+    // Create a new buffer of the specified size
+    _bytes = Uint8List(newCapacity);
     _capacity = newCapacity;
-    _wrapper.position = oldPosition.clamp(0, _capacity);
+
+    // Reset internal positions
+    _pos = 0;
+    _length = 0;
   }
 
-  /// It tracks the highest byte index written to.
-  void _updateLogicalPosition() {
-    final currentCursorPos = _wrapper.position;
-    if (currentCursorPos > _position) {
-      _position = currentCursorPos;
+  /// Helps track how full the buffer is (especially if you pre-allocated).
+  int get remainingCapacity => _capacity - _pos;
+
+  /// Returns the number of bytes written so far (the high‑water mark).
+  ///
+  /// This tells you exactly how many valid bytes are in the internal buffer.
+  ///
+  /// #### Example
+  /// ```dart
+  /// final w = BincodeWriter();
+  /// w.writeU16(0xABCD);
+  /// print(w.getBytesWritten()); // 2
+  /// ```
+  int getBytesWritten() => _length;
+
+  /// Returns a `Uint8List` view over the valid bytes written so far.
+  ///
+  /// This is a slice of the internal buffer from 0 up to [getBytesWritten].
+  /// Further writes to the writer will not modify this returned list.
+  ///
+  /// #### Example
+  /// ```dart
+  /// final w = BincodeWriter();
+  /// w.writeU8(42);
+  /// final bytes = w.toBytes(); // [42]
+  /// ```
+  @override
+  Uint8List toBytes() => Uint8List.view(_bytes.buffer, 0, _length);
+
+  /// Returns a `ByteBuffer` containing only the valid data written so far.
+  ///
+  /// Equivalent to `toBytes().buffer`.
+  ///
+  /// #### Example
+  /// ```dart
+  /// final w = BincodeWriter();
+  /// w.writeU32(0x12345678);
+  /// final buf = w.buffer;
+  /// // `buf` now holds exactly 4 bytes: 0x78,0x56,0x34,0x12
+  /// ```
+  ByteBuffer get buffer => toBytes().buffer;
+
+// ─── Positioning Helpers ────────────────────────────────────────────────────
+
+  /// Moves the write cursor forward by [offset] bytes.
+  ///
+  /// #### Solves:
+  /// Allows you to skip ahead (e.g. reserve space for a header) without writing.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// writer.seek(4);      // leave 4 bytes blank for a length prefix
+  /// // ... write payload ...
+  /// writer.position = 0; // come back and fill in the prefix
+  /// ```
+  @override
+  void seek(int offset) => _pos += offset;
+
+  /// Returns the current write cursor position (0‑based).
+  ///
+  /// #### Solves:
+  /// Let’s you inspect how many bytes have already been written.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// print('At byte index ${writer.position}');
+  /// ```
+  @override
+  int get position => _pos;
+
+  /// Sets the write cursor to [v].
+  ///
+  /// #### Solves:
+  /// Jump around in the buffer, e.g. to backpatch headers or overwrite fields.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// writer.position = 2;  // next write will go at byte index 2
+  /// ```
+  @override
+  set position(int v) => _pos = v;
+
+  /// Reset the write cursor to the start (does **not** clear existing bytes).
+  ///
+  /// #### Solves:
+  /// Quickly start a fresh serialization pass (paired with `reset()`).
+  ///
+  /// #### Example:
+  /// ```dart
+  /// writer.rewind();
+  /// writer.writeU8(0x01); // overwrites the first byte
+  /// ```
+  @override
+  void rewind() => _pos = 0;
+
+  /// Moves the write cursor to the end of the current data (`length`).
+  ///
+  /// #### Solves:
+  /// Continue appending after a back‑patch or inspection.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// writer.rewind();
+  /// writer.writeU8(0x00);      // overwrite first byte
+  /// writer.skipToEnd();
+  /// writer.writeU8(0xFF);      // re‑append at the end
+  /// ```
+  @override
+  void skipToEnd() => _pos = _length;
+
+  /// Sets the write cursor to an absolute byte offset [offset].
+  ///
+  /// #### Solves:
+  /// Same as `position = offset`, but reads more naturally.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// writer.seekTo(headerStart);
+  /// ```
+  @override
+  void seekTo(int offset) => _pos = offset;
+
+// ─── One‑Shot Encoding Helpers ───────────────────────────────────────────────
+
+  /// Reset, serialize [value], and return exactly the bytes written.
+  ///
+  /// #### Solves:
+  /// Encapsulates “reset + encode + toBytes” into one simple call.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// final bytes = BincodeWriter.encodeToBytes(myStruct);
+  /// ```
+  Uint8List encodeToBytes(BincodeCodable value) {
+    reset();
+    value.encode(this);
+    return toBytes();
+  }
+
+  /// “Dry‑run” encode of [value] to measure its final byte length, without copies.
+  ///
+  /// #### Solves:
+  /// Let’s you pre‑allocate or reserve the exact needed buffer size first.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// final size = writer.measure(myStruct);
+  /// writer.reserve(size);
+  /// writer.encodeToBytes(myStruct);
+  /// ```
+  int measure(BincodeCodable value) {
+    reset();
+    value.encode(this);
+    return getBytesWritten();
+  }
+
+  /// Static shortcut for `BincodeWriter(initialCapacity).encodeToBytes(value)`.
+  ///
+  /// #### Solves:
+  /// One‑liner encoding when you don’t need to reuse a writer.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// final bytes = BincodeWriter.encode(myStruct);
+  /// ```
+  static Uint8List encode(BincodeCodable value, {int initialCapacity = 128}) {
+    final w = BincodeWriter(initialCapacity: initialCapacity);
+    return w.encodeToBytes(value);
+  }
+
+  /// Ensure the buffer can hold at least [minCapacity] bytes without resizing.
+  ///
+  /// #### Solves:
+  /// Avoid mid‑serialization growth/copies if you already know your payload size.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// final expected = writer.measure(header);
+  /// writer.reserve(expected + extraSpace);
+  /// writer.encodeToBytes(header);
+  /// ```
+  void reserve(int minCapacity) {
+    if (_capacity < minCapacity) {
+      final buf = Uint8List(minCapacity)..setRange(0, _pos, _bytes);
+      _bytes = buf;
+      _capacity = minCapacity;
     }
   }
 
-  // --- Primitive Writing Methods ---
-
-  /// Writes an unsigned 8-bit integer [value] (byte) to the buffer.
+  /// Reset, serialize [value], and stream its raw bytes into an [IOSink].
   ///
-  /// Corresponds to serializing a `u8` in Rust.
-  /// If `unchecked` is true, range validation and buffer capacity checks are skipped.
+  /// #### Solves:
+  /// Encoding directly to a file/socket without ever allocating a full `Uint8List`.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// await writer.encodeToSink(myStruct, socket);
+  /// ```
+  Future<void> encodeToSink(BincodeCodable value, IOSink sink) async {
+    reset();
+    value.encode(this);
+    sink.add(_bytes.sublist(0, _length));
+    await sink.flush();
+  }
+
+// ─── Formatting & Output Helpers ─────────────────────────────────────────────
+
+  /// Produce a hex‑dump of [bytes], with `-` between each two‑digit hex byte.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// final hex = BincodeWriter.toHex(bytes);
+  /// print(hex); // "ff-00-1a-2b"
+  /// ```
+  static String toHex(Uint8List bytes) {
+    if (bytes.isEmpty) return '';
+    final sb = StringBuffer();
+    for (var i = 0; i < bytes.length; i++) {
+      sb.write(bytes[i].toRadixString(16).padLeft(2, '0'));
+      if (i + 1 < bytes.length) sb.write('-');
+    }
+    return sb.toString();
+  }
+
+  /// Base64‑encode a freshly serialized [value].
+  ///
+  /// #### Solves:
+  /// Embedding binary blobs in text‑only formats (JSON, logs, etc.).
+  ///
+  /// #### Example:
+  /// ```dart
+  /// final b64 = BincodeWriter.encodeToBase64(myStruct);
+  /// ```
+  static String encodeToBase64(BincodeCodable value) {
+    final bytes = encode(value);
+    return base64.encode(bytes);
+  }
+
+  /// Synchronously serialize [value] and write the bytes to disk at [path].
+  ///
+  /// #### Solves:
+  /// One‑line, blocking file‑dump for quick CLI tools or tests.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// BincodeWriter.encodeToFileSync(myStruct, 'out.bin');
+  /// ```
+  static void encodeToFileSync(
+    BincodeCodable value,
+    String path, {
+    int initialCapacity = 128,
+  }) {
+    final bytes = encode(value, initialCapacity: initialCapacity);
+    File(path).writeAsBytesSync(bytes, flush: true);
+  }
+
+  // ─── Growth & Tracking ──────────────────────────────────────────────────────
+
+  @pragma('vm:prefer-inline')
+  void _ensureCapacity(int needed) {
+    final min = _pos + needed;
+    if (min > _capacity) {
+      int newCap = _capacity * 2;
+      if (newCap < min) newCap = min;
+      final buf = Uint8List(newCap)..setRange(0, _pos, _bytes);
+      _bytes = buf;
+      _capacity = newCap;
+    }
+  }
+
+  @pragma('vm:prefer-inline')
+  void _track(int newPos) {
+    _pos = newPos;
+    if (newPos > _length) _length = newPos;
+  }
+
+// ─── Primitive Writes ───────────────────────────────────────────────────────
+
+  /// Writes an unsigned 8‑bit integer [v], matching Rust’s `u8`.
+  ///
+  /// 1. Ensures there is space for 1 byte.
+  /// 2. Masks and stores the low 8 bits of [v] into the buffer.
+  /// 3. Advances the write cursor and updates the high‑water mark.
   ///
   /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Serialize)]
-  /// struct Header {
-  ///     version: u8, // Use for this field
+  /// struct Packet { id: u8 }
+  /// // bincode::serialize(&Packet { id: 255 }) yields one byte [0xFF].
+  /// ```
+  @override
+  @pragma('vm:prefer-inline')
+  void writeU8(int v) {
+    _ensureCapacity(1);
+    _bytes[_pos] = v & 0xFF;
+    _track(_pos + 1);
+  }
+
+  /// Writes an unsigned 16‑bit integer [v] in little‑endian order (`u16`).
+  ///
+  /// 1. Ensures space for 2 bytes.
+  /// 2. Stores the low byte, then the high byte.
+  /// 3. Advances cursor by 2.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// struct Header { version: u16 }
+  /// // serializes to two bytes: low then high.
+  /// ```
+  @override
+  @pragma('vm:prefer-inline')
+  void writeU16(int v) {
+    _ensureCapacity(2);
+    final p = _pos;
+    _bytes[p] = v & 0xFF;
+    _bytes[p + 1] = (v >> 8) & 0xFF;
+    _track(p + 2);
+  }
+
+  /// Writes an unsigned 32‑bit integer [v] in little‑endian order (`u32`).
+  ///
+  /// 1. Ensures space for 4 bytes.
+  /// 2. Unpacks and stores each of the four bytes from least to most significant.
+  /// 3. Advances cursor by 4.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// struct Record { count: u32 }
+  /// ```
+  @override
+  @pragma('vm:prefer-inline')
+  void writeU32(int v) {
+    _ensureCapacity(4);
+    final p = _pos;
+    _bytes[p] = v & 0xFF;
+    _bytes[p + 1] = (v >> 8) & 0xFF;
+    _bytes[p + 2] = (v >> 16) & 0xFF;
+    _bytes[p + 3] = (v >> 24) & 0xFF;
+    _track(p + 4);
+  }
+
+  /// Writes an unsigned 64‑bit integer [v] in little‑endian order (`u64`).
+  ///
+  /// 1. Ensures space for 8 bytes.
+  /// 2. Writes bytes 0 through 7 (LSB first).
+  /// 3. Advances cursor by 8.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// struct Timestamp { nanos: u64 }
+  /// ```
+  @override
+  @pragma('vm:prefer-inline')
+  void writeU64(int v) {
+    _ensureCapacity(8);
+    final p = _pos;
+    _bytes[p] = v & 0xFF;
+    _bytes[p + 1] = (v >> 8) & 0xFF;
+    _bytes[p + 2] = (v >> 16) & 0xFF;
+    _bytes[p + 3] = (v >> 24) & 0xFF;
+    _bytes[p + 4] = (v >> 32) & 0xFF;
+    _bytes[p + 5] = (v >> 40) & 0xFF;
+    _bytes[p + 6] = (v >> 48) & 0xFF;
+    _bytes[p + 7] = (v >> 56) & 0xFF;
+    _track(p + 8);
+  }
+
+  /// Writes a signed 8‑bit integer [v] (`i8`) by reusing [writeU8].
+  ///
+  /// Two’s‑complement values are stored identically as `u8`.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// struct Value { signed: i8 }
+  /// ```
+  @override
+  @pragma('vm:prefer-inline')
+  void writeI8(int v) => writeU8(v);
+
+  /// Writes a signed 16‑bit integer [v] (`i16`) in little‑endian format.
+  ///
+  /// Identical to `u16` representation, but interprets the bits as signed.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// struct Reading { temp: i16 }
+  /// ```
+  @override
+  @pragma('vm:prefer-inline')
+  void writeI16(int v) {
+    _ensureCapacity(2);
+    final p = _pos;
+    _bytes[p] = v & 0xFF;
+    _bytes[p + 1] = (v >> 8) & 0xFF;
+    _track(p + 2);
+  }
+
+  /// Writes a signed 32‑bit integer [v] (`i32`) in little‑endian format.
+  ///
+  /// Same byte‑packing as `u32`, two’s complement interpretation.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// struct Vec2 { x: i32 }
+  /// ```
+  @override
+  @pragma('vm:prefer-inline')
+  void writeI32(int v) {
+    _ensureCapacity(4);
+    final p = _pos;
+    _bytes[p] = v & 0xFF;
+    _bytes[p + 1] = (v >> 8) & 0xFF;
+    _bytes[p + 2] = (v >> 16) & 0xFF;
+    _bytes[p + 3] = (v >> 24) & 0xFF;
+    _track(p + 4);
+  }
+
+  /// Writes a signed 64‑bit integer [v] (`i64`) in little‑endian format.
+  ///
+  /// Same layout as `u64`, interpreted as signed two’s complement.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// struct Balance { amount: i64 }
+  /// ```
+  @override
+  @pragma('vm:prefer-inline')
+  void writeI64(int v) {
+    _ensureCapacity(8);
+    final p = _pos;
+    _bytes[p] = v & 0xFF;
+    _bytes[p + 1] = (v >> 8) & 0xFF;
+    _bytes[p + 2] = (v >> 16) & 0xFF;
+    _bytes[p + 3] = (v >> 24) & 0xFF;
+    _bytes[p + 4] = (v >> 32) & 0xFF;
+    _bytes[p + 5] = (v >> 40) & 0xFF;
+    _bytes[p + 6] = (v >> 48) & 0xFF;
+    _bytes[p + 7] = (v >> 56) & 0xFF;
+    _track(p + 8);
+  }
+
+  /// Writes a 32‑bit float [x] in little‑endian IEEE‑754 format (`f32`).
+  ///
+  /// 1. Ensures 4‑byte space.
+  /// 2. Stores the 32‑bit bitpattern via a shared scratch buffer.
+  /// 3. Copies bytes into `_bytes` then advances.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// struct Point { x: f32 }
+  /// ```
+  @override
+  @pragma('vm:prefer-inline')
+  void writeF32(double x) {
+    _ensureCapacity(4);
+    final p = _pos;
+    _conv32[0] = x;
+    _bytes[p] = _convBytes[0];
+    _bytes[p + 1] = _convBytes[1];
+    _bytes[p + 2] = _convBytes[2];
+    _bytes[p + 3] = _convBytes[3];
+    _track(p + 4);
+  }
+
+  /// Writes a 64‑bit float [x] in little‑endian IEEE‑754 format (`f64`).
+  ///
+  /// Uses  scratch buffer trick to avoid repeated allocations.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// struct Point { y: f64 }
+  /// ```
+  @override
+  @pragma('vm:prefer-inline')
+  void writeF64(double x) {
+    _ensureCapacity(8);
+    final p = _pos;
+    _conv64[0] = x;
+    _bytes[p] = _convBytes[0];
+    _bytes[p + 1] = _convBytes[1];
+    _bytes[p + 2] = _convBytes[2];
+    _bytes[p + 3] = _convBytes[3];
+    _bytes[p + 4] = _convBytes[4];
+    _bytes[p + 5] = _convBytes[5];
+    _bytes[p + 6] = _convBytes[6];
+    _bytes[p + 7] = _convBytes[7];
+    _track(p + 8);
+  }
+
+  // ─── Common Writes ────────────────────────────────────────────────────────
+
+  /// Writes a boolean [b] as a single byte: `1` for `true`, `0` for `false`.
+  ///
+  /// This corresponds to `bool` in Rust.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// struct State {
+  ///     active: bool,
   /// }
   /// ```
-  /// **Layout:** 1 byte.
+  /// **Layout:** `[1]` for `true`, `[0]` for `false`
   @override
-  void writeU8(int value) {
-    if (!unchecked) {
-      if (value < 0 || value > 0xFF) {
-        throw InvalidWriteRangeException(value, 'u8',
-            minValue: 0, maxValue: 0xFF);
-      }
-      _ensureCapacity(1);
-    }
-    _wrapper.writeUint8(value);
-    _updateLogicalPosition();
-  }
+  void writeBool(bool b) => writeU8(b ? 1 : 0);
 
-  /// Writes an unsigned 16-bit integer [value] to the buffer (Little-Endian).
+  /// Writes a raw list of bytes [data] directly into the buffer.
   ///
-  /// Corresponds to serializing a `u16` in Rust.
-  /// If `unchecked` is true, range validation and buffer capacity checks are skipped.
+  /// No length prefix is written. This is a low-level method
+  /// used by higher-level constructs like `writeString`.
   ///
   /// #### Rust Context Example:
   /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Item {
-  ///     item_code: u16, // Use for this field
+  /// struct RawPayload {
+  ///     buffer: Vec<u8>, // used with length prefix in Rust
   /// }
   /// ```
-  /// **Layout:** 2 bytes, Little Endian.
+  /// **Layout:** `[....]` raw bytes only
   @override
-  void writeU16(int value) {
-    if (!unchecked) {
-      if (value < 0 || value > 0xFFFF) {
-        throw InvalidWriteRangeException(value, 'u16',
-            minValue: 0, maxValue: 0xFFFF);
-      }
-      _ensureCapacity(2);
+  void writeBytes(List<int> data) {
+    final len = data.length;
+    _ensureCapacity(len);
+    final end = _pos + len;
+    if (data is Uint8List) {
+      _bytes.setRange(_pos, end, data);
+    } else {
+      _bytes.setRange(_pos, end, Uint8List.fromList(data));
     }
-    _wrapper.writeUint16(value);
-    _updateLogicalPosition();
+    _track(end);
   }
 
-  /// Writes an unsigned 32-bit integer [value] to the buffer (Little-Endian).
+  /// Writes a UTF‑8 encoded [String] with a `u64` length prefix.
   ///
-  /// Corresponds to serializing a `u32` in Rust.
-  /// If `unchecked` is true, range validation and buffer capacity checks are skipped.
+  /// Encodes Rust's `String` or `&str` by prefixing the byte count
+  /// as `u64`, followed by the UTF‑8 bytes of the string.
   ///
   /// #### Rust Context Example:
   /// ```rust
-  /// #[derive(Serialize)]
   /// struct Message {
-  ///     message_id: u32, // Use for this field
+  ///     text: String,
   /// }
   /// ```
-  /// **Layout:** 4 bytes, Little Endian.
+  /// **Layout:** `[len: u64][utf8-bytes...]`
   @override
-  void writeU32(int value) {
-    if (!unchecked) {
-      if (value < 0 || value > 0xFFFFFFFF) {
-        throw InvalidWriteRangeException(value, 'u32',
-            minValue: 0, maxValue: 0xFFFFFFFF);
-      }
-      _ensureCapacity(4);
-    }
-    _wrapper.writeUint32(value);
-    _updateLogicalPosition();
+  void writeString(String s) {
+    final bytes = utf8.encode(s);
+    writeU64(bytes.length);
+    writeBytes(bytes);
   }
 
-  /// Writes an unsigned 64-bit integer [value] to the buffer (Little-Endian).
+  /// Writes a fixed-length UTF‑8 string padded with zeros.
   ///
-  /// Corresponds to serializing a `u64` in Rust. Accepts a standard Dart [int].
-  /// Note that Dart's `int` is signed; values representing the upper half of the
-  /// u64 range (>= 2^63) will be negative when interpreted as signed Dart integers,
-  /// but their bit patterns are written correctly as unsigned by this method.
-  ///
-  /// If `unchecked` is true, buffer capacity checks are skipped.
+  /// This mimics Rust's with a
+  /// constant-length array `[u8; N]` for fixed string fields.
   ///
   /// #### Rust Context Example:
   /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Timestamps {
-  ///     creation_time_ns: u64, // Use for this field
+  /// struct Header {
+  ///     label: [u8; 16], // fixed size
   /// }
   /// ```
-  /// **Layout:** 8 bytes, Little Endian.
+  /// **Layout:** `[utf8...][0 0 ...]` (padded to exactly `len` bytes)
   @override
-  void writeU64(int value) {
-    if (!unchecked) {
-      // The check `if (value < 0)` was removed.
-      // Dart's standard 'int' is signed 64-bit. To represent the full u64 range,
-      // values >= 2^63 will appear negative in Dart (e.g., 0xFFFFFFFFFFFFFFFF is -1).
-      _ensureCapacity(8);
-    }
-    _wrapper.writeUint64(value);
-    _updateLogicalPosition();
-  }
-
-  /// Writes a signed 8-bit integer [value] to the buffer.
-  ///
-  /// Corresponds to serializing an `i8` in Rust.
-  /// If `unchecked` is true, range validation and buffer capacity checks are skipped.
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Adjustment {
-  ///     offset: i8, // Use for this field
-  /// }
-  /// ```
-  /// **Layout:** 1 byte.
-  @override
-  void writeI8(int value) {
-    if (!unchecked) {
-      if (value < -0x80 || value > 0x7F) {
-        throw InvalidWriteRangeException(value, 'i8',
-            minValue: -0x80, maxValue: 0x7F);
-      }
-      _ensureCapacity(1);
-    }
-    _wrapper.writeInt8(value);
-    _updateLogicalPosition();
-  }
-
-  /// Writes a signed 16-bit integer [value] to the buffer (Little-Endian).
-  ///
-  /// Corresponds to serializing an `i16` in Rust.
-  /// If `unchecked` is true, range validation and buffer capacity checks are skipped.
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Point {
-  ///     x_coord: i16, // Use for this field
-  /// }
-  /// ```
-  /// **Layout:** 2 bytes, Little Endian.
-  @override
-  void writeI16(int value) {
-    if (!unchecked) {
-      if (value < -0x8000 || value > 0x7FFF) {
-        throw InvalidWriteRangeException(value, 'i16',
-            minValue: -0x8000, maxValue: 0x7FFF);
-      }
-      _ensureCapacity(2);
-    }
-    _wrapper.writeInt16(value);
-    _updateLogicalPosition();
-  }
-
-  /// Writes a signed 32-bit integer [value] to the buffer (Little-Endian).
-  ///
-  /// Corresponds to serializing an `i32` in Rust.
-  /// If `unchecked` is true, range validation and buffer capacity checks are skipped.
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Event {
-  ///     status_code: i32, // Use for this field
-  /// }
-  /// ```
-  /// **Layout:** 4 bytes, Little Endian.
-  @override
-  void writeI32(int value) {
-    if (!unchecked) {
-      if (value < -0x80000000 || value > 0x7FFFFFFF) {
-        throw InvalidWriteRangeException(value, 'i32',
-            minValue: -0x80000000, maxValue: 0x7FFFFFFF);
-      }
-      _ensureCapacity(4);
-    }
-    _wrapper.writeInt32(value);
-    _updateLogicalPosition();
-  }
-
-  /// Writes a signed 64-bit integer [value] to the buffer (Little-Endian).
-  ///
-  /// Corresponds to serializing an `i64` in Rust.
-  /// If `unchecked` is true, buffer capacity checks are skipped. (Range check implicit in Dart `int`).
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct FileInfo {
-  ///     file_id: i64, // Use for this field
-  /// }
-  /// ```
-  /// **Layout:** 8 bytes, Little Endian.
-  @override
-  void writeI64(int value) {
-    if (!unchecked) {
-      _ensureCapacity(8);
-    }
-    _wrapper.writeInt64(value);
-    _updateLogicalPosition();
-  }
-
-  /// Writes a 32-bit floating point number [value] (IEEE 754) to the buffer (Little-Endian).
-  ///
-  /// Corresponds to serializing an `f32` in Rust.
-  /// If `unchecked` is true, buffer capacity checks are skipped.
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Measurement {
-  ///     value: f32, // Use for this field
-  /// }
-  /// ```
-  /// **Layout:** 4 bytes, IEEE 754, Little Endian.
-  @override
-  void writeF32(double value) {
-    if (!unchecked) {
-      _ensureCapacity(4);
-    }
-    _wrapper.writeFloat32(value);
-    _updateLogicalPosition();
-  }
-
-  /// Writes a 64-bit floating point number [value] (IEEE 754) to the buffer (Little-Endian).
-  ///
-  /// Corresponds to serializing an `f64` in Rust.
-  /// If `unchecked` is true, buffer capacity checks are skipped.
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Coordinates {
-  ///     latitude: f64, // Use for this field
-  /// }
-  /// ```
-  /// **Layout:** 8 bytes, IEEE 754, Little Endian.
-  @override
-  void writeF64(double value) {
-    if (!unchecked) {
-      _ensureCapacity(8);
-    }
-    _wrapper.writeFloat64(value);
-    _updateLogicalPosition();
-  }
-
-  /// Writes a boolean [value] to the buffer as a single byte (1 for true, 0 for false).
-  ///
-  /// Corresponds to serializing a `bool` in Rust.
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Status {
-  ///     is_active: bool, // Use for this field
-  /// }
-  /// ```
-  /// **Layout:** 1 byte (0 or 1).
-  @override
-  void writeBool(bool value) {
-    writeU8(value ? 1 : 0);
-  }
-
-  /// Writes the raw list of bytes [bytes] sequentially to the buffer.
-  ///
-  /// This is suitable for writing data corresponding to Rust's `Vec<u8>`, `&[u8]`, or fixed arrays like `[u8; N]`.
-  /// Note that this method does *not* write a length prefix; use [writeList] or [writeUint8List] if a Bincode sequence length is needed.
-  /// If `unchecked` is true, buffer capacity checks are skipped.
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Packet {
-  ///     payload: Vec<u8>,   // Use writeUint8List (includes length) or writeBytes (raw)
-  ///     signature: [u8; 64], // Use writeBytes for this field
-  /// }
-  /// ```
-  /// **Layout:** The raw sequence of bytes provided in the [bytes] list.
-  @override
-  void writeBytes(List<int> bytes) {
-    final length = bytes.length;
-    if (!unchecked) {
-      _ensureCapacity(length);
-    }
-    _wrapper.writeBytes(bytes);
-    _updateLogicalPosition();
-  }
-
-  /// Encodes the given string [value] (default UTF-8) and writes its U64 length prefix followed by the encoded bytes.
-  ///
-  /// Corresponds directly to serializing a `String` in Rust.
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct User {
-  ///     username: String, // Use for this field
-  /// }
-  /// ```
-  /// **Layout:** `[u64 length][encoded string bytes...]`
-  @override
-  void writeString(String value,
-      [StringEncoding encoding = StringEncoding.utf8]) {
-    final encoded = encodeString(value, encoding);
-    writeU64(encoded.length);
-    writeBytes(encoded);
-  }
-
-  /// Writes a fixed-length byte representation of the string [value] to the buffer.
-  ///
-  /// Encodes the string (UTF-8), then writes exactly `length` bytes. If the encoded
-  /// string is shorter than `length`, it's padded with trailing zeros. If longer,
-  /// it's truncated. Throws if `length` is negative.
-  ///
-  /// #### Rust Context Example (Conceptual):
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct LegacyRecord {
-  ///     // Fixed-size name field (e.g., UTF-8 truncated/padded to 32 bytes)
-  ///     name_fixed: [u8; 32], // Use for this field
-  /// }
-  /// ```
-  /// **Layout:** Exactly `length` bytes.
-  @override
-  void writeFixedString(String value, int length) {
-    if (length < 0) {
-      throw BincodeWriteException(
-          'Fixed string length cannot be negative: $length');
-    }
-    final encodedBytes = encodeString(value, StringEncoding.utf8);
-    final bytesToWrite = Uint8List(length);
-
-    final bytesToCopy =
-        encodedBytes.length < length ? encodedBytes.length : length;
-
-    for (var i = 0; i < bytesToCopy; i++) {
-      bytesToWrite[i] = encodedBytes[i];
-    }
-    writeBytes(bytesToWrite);
+  void writeFixedString(String s, int len) {
+    final bytes = utf8.encode(s);
+    _ensureCapacity(len);
+    final p = _pos;
+    final copyLen = bytes.length < len ? bytes.length : len;
+    _bytes.setRange(p, p + copyLen, bytes);
+    if (copyLen < len) _bytes.fillRange(p + copyLen, p + len, 0);
+    _track(p + len);
   }
 
   // --- Optional Value Writing Methods ---
@@ -751,10 +927,9 @@ class BincodeWriter implements BincodeWriterBuilder {
   /// ```
   /// **Layout:** `[0]` if `value` is `null`, `[1][u64 length][string bytes...]` otherwise.
   @override
-  void writeOptionString(String? value,
-      [StringEncoding encoding = StringEncoding.utf8]) {
+  void writeOptionString(String? value) {
     writeU8(value != null ? 1 : 0);
-    if (value != null) writeString(value, encoding);
+    if (value != null) writeString(value);
   }
 
   /// Writes an optional fixed-length string representation [value] to the buffer.
@@ -768,7 +943,7 @@ class BincodeWriter implements BincodeWriterBuilder {
   /// #[derive(Serialize)]
   /// struct Record {
   ///     // If tag is optional and always stored in 8 bytes (UTF-8, padded/truncated)
-  ///     optional_tag: Option<[u8; 8]>, // Use for this field conceptually
+  ///     optional_tag: Option<[u8; 8]>, // Use for this field
   /// }
   /// ```
   /// **Layout:** `[0]` if `value` is `null`, `[1][N fixed bytes...]` otherwise.
@@ -776,39 +951,6 @@ class BincodeWriter implements BincodeWriterBuilder {
   void writeOptionFixedString(String? value, int length) {
     writeU8(value != null ? 1 : 0);
     if (value != null) writeFixedString(value, length);
-  }
-
-  /// Writes an optional 3-element Float32List [vec3] according to Bincode's `Option<T>` encoding for fixed arrays.
-  ///
-  /// Writes a 1-byte flag (0 for None/null, 1 for Some/non-null). If Some,
-  /// it verifies the list has exactly 3 elements and then writes the three `f32`
-  /// values sequentially using [writeF32]. Does not write extra padding for the None case.
-  /// Throws [BincodeWriteException] if a non-null list with length != 3 is provided.
-  /// Corresponds to serializing `Option<[f32; 3]>` in Rust.
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Transform {
-  ///     // Optional 3D scale vector
-  ///     scale: Option<[f32; 3]>, // Use for this field
-  /// }
-  /// ```
-  /// **Layout:** `[0]` if `vec3` is `null`, `[1][f32 bytes][f32 bytes][f32 bytes]` otherwise.
-  @override
-  void writeOptionF32Triple(Float32List? vec3) {
-    if (vec3 == null) {
-      writeU8(0);
-    } else {
-      if (vec3.length != 3) {
-        throw BincodeWriteException(
-            'Expected Float32List with 3 elements, but got ${vec3.length}');
-      }
-      writeU8(1);
-      writeF32(vec3[0]);
-      writeF32(vec3[1]);
-      writeF32(vec3[2]);
-    }
   }
 
   /// Writes a generic list of [values] as a Bincode sequence.
@@ -823,9 +965,6 @@ class BincodeWriter implements BincodeWriterBuilder {
   /// to specialized methods (e.g., [writeInt32List], [writeFloat64List]) for primitive types,
   /// or using `writeBytes` directly for `Uint8List`, due to Dart loop overhead and
   /// function call indirection for each element.
-  ///
-  /// The internal calls to [writeU64] and any methods called within the [writeElement]
-  /// callback respect the `unchecked` flag for range and capacity checks.
   ///
   /// #### Rust Context Example:
   ///  Used when serializing `Vec<T>` where T is a custom struct, enum, or complex type.
@@ -858,9 +997,6 @@ class BincodeWriter implements BincodeWriterBuilder {
   ///
   /// **Performance Warning:** Similar to [writeList], this can be less performant for large
   /// maps due to iteration and callback overhead for each key and value.
-  ///
-  /// The internal calls to [writeU64] and any methods called within the [writeKey] and
-  /// [writeValue] callbacks respect the `unchecked` flag for range and capacity checks.
   ///
   /// #### Rust Context Example:
   /// ```rust
@@ -1173,115 +1309,82 @@ class BincodeWriter implements BincodeWriterBuilder {
 
   // --- Nested Object Writing Methods ---
 
-  /// Writes a nested [BincodeEncodable] object [value] to the buffer **with a length prefix**.
-  /// Corresponds to dynamic collection elements (e.g., `Vec<T>`).
-  /// **DEPRECATED:** Use `writeNestedValueForCollection` explicitly.
-  @Deprecated(
-      'Use writeNestedValueForCollection or writeNestedValueForFixed instead')
+  /// Writes a nested value as a length-prefixed inline payload.
+  ///
+  /// This mimics how Bincode encodes nested dynamically-sized types in Rust:
+  /// it writes a `u64` prefix (denoting byte count), followed by the actual serialized content.
+  ///
+  /// Instead of allocating a temporary buffer, it reserves 8 bytes first,
+  /// serializes the object directly into the same buffer, and patches
+  /// the length afterward.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Serialize)]
+  /// struct Wrapper {
+  ///     child: NestedType,
+  /// }
+  /// ```
+  /// In Rust, `child` is serialized as `[len: u64][NestedType bytes...]` inline.
+  ///
+  /// **Layout:** `[len: u64][encoded nested bytes...]`
   @override
-  void writeNested(BincodeEncodable value) {
-    final bytes = value.toBincode();
-    writeU64(bytes.length);
-    writeBytes(bytes);
-  }
+  void writeNestedValueForCollection(BincodeCodable value) {
+    final lenPos = _pos;
+    _pos += 8;
+    final start = _pos;
 
-  /// Writes an optional nested [BincodeEncodable] object [value] to the buffer.
-  /// Writes flag byte, then (if Some) length prefix and bytes.
-  /// Corresponds to `Option<T>` where T is dynamic.
-  /// **DEPRECATED:** Use `writeOptionNestedValueForCollection` explicitly.
-  @Deprecated(
-      'Use writeOptionNestedValueForCollection or writeOptionNestedValueForFixed instead')
-  @override
-  void writeOptionNested(BincodeEncodable? value) {
-    if (value == null) {
-      writeU8(0);
-      return;
+    value.encode(this); // Serialize directly inline
+
+    final nestedLen = _pos - start;
+    for (var i = 0; i < 8; i++) {
+      _bytes[lenPos + i] = (nestedLen >> (8 * i)) & 0xFF;
     }
-    writeU8(1);
-    writeNested(value);
   }
 
-  /// Writes a custom [BincodeEncodable] object [value] prefixed with its U64 length.
+  /// Writes a nested value directly into the buffer with **no length prefix**.
   ///
-  /// Use this method **only** when serializing a Dart field holding a custom object
-  /// (which implements `BincodeEncodable`) that corresponds to a dynamically sized
-  /// field type in Rust, such as an element within a `Vec<CustomStruct>`.
-  /// This method prepends the byte length before the object's serialized bytes.
+  /// This method serializes the value inline as raw bytes, using its fixed layout.
+  /// It does **not** include a `u64` length, tag, or any metadata. The value must
+  /// have a consistent, fixed-size binary representation.
   ///
-  /// **Do not use** for standard Dart `String` (use `writeString`) or `List`
-  /// (use `writeList` or specialized list writers like `writeInt32List`).
+  /// This is used for structs where the layout is known at compile time,
+  /// and size can be determined without a prefix.
   ///
-  /// #### Rust Context Example:
-  /// This method applies when serializing each `MyItem` element within the `items` Vec:
+  /// #### Rust Bincode Context:
   /// ```rust
   /// #[derive(Serialize)]
-  /// struct Container {
-  ///     items: Vec<MyItem>, // Use for each MyItem element
+  /// struct Vec3 {
+  ///     x: f32,
+  ///     y: f32,
+  ///     z: f32,
   /// }
-  ///
-  /// #[derive(Serialize)]
-  /// struct MyItem { /* fields */ }
-  /// // In Dart: MyItem instance passed must implement BincodeEncodable
   /// ```
-  /// **Layout:** `[u64 length][bytes...]` where `bytes` are from `value.toBincode()`.
-  void writeNestedValueForCollection(BincodeEncodable value) {
-    final bytes = value.toBincode();
-    writeU64(bytes.length);
-    writeBytes(bytes);
-  }
-
-  /// Writes the raw bincode encoding of a custom [BincodeEncodable] object [value] directly,
-  /// *without* any length prefix.
   ///
-  /// Use this method **only** when serializing a Dart field holding a custom object
-  /// (which implements `BincodeEncodable`) that corresponds to a fixed-size Rust
-  /// struct field embedded directly within another struct.
-  ///
-  /// **Do not use** for primitives (use `writeInt32`, etc.), standard `String`
-  /// (use `writeString`), or byte arrays (use `writeBytes`).
-  ///
-  /// #### Rust Context Example:
-  /// This method applies when serializing the `inner_data` field:
-  /// ```rust
-  /// #[derive(Serialize)]
-  /// struct Outer {
-  ///     inner_data: InnerStruct, // Use for this field
-  /// }
-  ///
-  /// #[derive(Serialize)]
-  /// struct InnerStruct { /* fields */ }
-  /// // In Dart: InnerStruct instance passed must implement BincodeEncodable
-  /// ```
-  /// **Layout:** `[bytes...]` where `bytes` are from `value.toBincode()`.
+  /// **Layout:** Raw struct bytes only. Does **not** include length or option tag.
+  @override
   void writeNestedValueForFixed(BincodeEncodable value) {
-    final bytes = value.toBincode();
-    writeBytes(bytes);
+    value.encode(this);
   }
 
-  /// Writes an optional custom [BincodeEncodable] object [value], suitable for dynamically sized types.
+  /// Writes an `Option<T>` where `T` is a dynamically-sized nested type.
   ///
-  /// Writes a 1-byte flag (0 for None, 1 for Some). If Some, it then writes the
-  /// U64 length followed by the value's bytes (obtained from `value.toBincode()`).
-  /// Use **only** when serializing an optional Dart field holding a custom object (`YourClass?`)
-  /// corresponding to Rust `Option<T>` where `T` represents a dynamic type like `Vec<CustomStruct>`.
-  ///
-  /// **Do not use** for `Option<String>` (use `writeOptionString`) or optional lists
-  /// (use `writeList` with an optional element writer or similar).
+  /// Encodes as:
+  /// - `0u8` if `value == null`
+  /// - `1u8` followed by `[len: u64][nested bytes...]` if present
   ///
   /// #### Rust Context Example:
-  /// This method applies when serializing the `maybe_items` field:
   /// ```rust
   /// #[derive(Serialize)]
-  /// struct DataHolder {
-  ///     maybe_items: Option<Vec<MyItem>>, // Use for this field
+  /// struct Wrapper {
+  ///     child: Option<NestedType>,
   /// }
-  ///
-  /// #[derive(Serialize)]
-  /// struct MyItem { /* fields */ }
-  /// // In Dart: MyItem instance passed (if Some) must implement BincodeEncodable
   /// ```
-  /// **Layout:** `[0]` if `value` is `null`, `[1][u64 length][bytes...]` otherwise.
-  void writeOptionNestedValueForCollection(BincodeEncodable? value) {
+  /// This is equivalent to Bincode's encoding of `Option<T>` where `T: Encode`.
+  ///
+  /// **Layout:** `[0]` if null, or `[1][len: u64][encoded value]`
+  @override
+  void writeOptionNestedValueForCollection(BincodeCodable? value) {
     if (value == null) {
       writeU8(0);
     } else {
@@ -1290,30 +1393,23 @@ class BincodeWriter implements BincodeWriterBuilder {
     }
   }
 
-  /// Writes an optional custom [BincodeEncodable] object [value], suitable for fixed-size types.
+  /// Writes an `Option<T>` where `T` is a fixed-size nested type.
   ///
-  /// Writes a 1-byte flag (0 for None, 1 for Some). If Some, it writes the raw
-  /// bytes of the value (obtained from `value.toBincode()`) directly, *without* a length prefix.
-  /// Use **only** when serializing an optional Dart field holding a custom object (`YourClass?`)
-  /// corresponding to Rust `Option<T>` where `T` is a fixed-size struct.
-  ///
-  /// **Do not use** for optional primitives (use `writeOptionI32`, etc.),
-  /// `Option<String>` (use `writeOptionString`), or optional byte arrays
-  /// (handle manually with `writeU8` flag + `writeBytes`, or use a specific helper).
+  /// Encodes as:
+  /// - `0u8` if `value == null`
+  /// - `1u8` followed by the raw fixed-size bytes
   ///
   /// #### Rust Context Example:
-  /// This method applies when serializing the `optional_settings` field:
   /// ```rust
   /// #[derive(Serialize)]
-  /// struct Config {
-  ///     optional_settings: Option<InnerSettings>, // Use for this field
+  /// struct Wrapper {
+  ///     config: Option<FixedStruct>,
   /// }
-  ///
-  /// #[derive(Serialize)]
-  /// struct InnerSettings { /* fields */ }
-  /// // In Dart: InnerSettings instance passed (if Some) must implement BincodeEncodable
   /// ```
-  /// **Layout:** `[0]` if `value` is `null`, `[1][bytes...]` otherwise.
+  /// This follows Bincode’s layout for optional fixed-size nested types.
+  ///
+  /// **Layout:** `[0]` if null, or `[1][encoded struct bytes]`
+  @override
   void writeOptionNestedValueForFixed(BincodeEncodable? value) {
     if (value == null) {
       writeU8(0);
@@ -1321,21 +1417,5 @@ class BincodeWriter implements BincodeWriterBuilder {
       writeU8(1);
       writeNestedValueForFixed(value);
     }
-  }
-
-  // --- Final Output Methods ---
-
-  /// Returns a [Uint8List] containing a copy of the bytes written to the buffer so far.
-  @override
-  Uint8List toBytes() {
-    return _wrapper.buffer.asUint8List(0, _position);
-  }
-
-  /// Asynchronously writes the serialized data to a file at the specified [path].
-  /// If the file already exists, it will be overwritten.
-  @override
-  Future<void> toFile(String path) async {
-    final trimmedBuffer = Uint8List.fromList(toBytes());
-    await File(path).writeAsBytes(trimmedBuffer, flush: true);
   }
 }

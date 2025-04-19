@@ -1,1204 +1,1771 @@
-// ============================================================
-// Disclaimer: This source code is provided "as is", without any
-// warranty of any kind, express or implied, including but not
-// limited to the warranties of merchantability or fitness for
-// a particular purpose.
-// ============================================================
+// Copyright (c) 2025 Binurie
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../d_bincode.dart';
 import 'builder.dart';
 import 'exception/exception.dart';
-import 'internal_utils/byte_data_wrapper.dart';
 
-/// A low-level binary reader that decodes data previously encoded in the [Bincode] format.
+/// A high-performance binary deserializer for Rust-compatible Bincode data.
 ///
-/// This class supports reading primitives, optionals, strings, collections, and
-/// nested objects from binary data using an internal [ByteDataWrapper]. It keeps track
-/// of the current read position and provides methods corresponding to Bincode encoding rules.
+/// `BincodeReader` provides low-level, cursor-based access to binary data encoded
+/// using Rust's `bincode` crates. It enables direct decoding of primitive
+/// types, strings, optionals, collections, and nested structures — all with fine-grained
+/// control over buffer position and alignment handling.
 ///
-/// The `unsafe` mode skips checks for sufficient remaining bytes before reads, can
-/// improving performance but risking runtime [RangeError] exceptions if reads go beyond
-/// the buffer bounds.
+/// ### Key Features
+/// - Supports `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`, `f32`, `f64`
+/// - Decodes `String`, fixed-length strings, `Option<T>`, `Vec<T>`, and `Map<K,V>`
+/// - Reads nested objects from both fixed-size and length-prefixed layouts
 ///
-/// Example:
+/// ### Memory & Performance
+/// - **Zero-copy** for fixed-size, aligned types using `TypedData.view`
+/// - Falls back to per-element decoding if buffer alignment is not satisfied
+/// - Variable-length fields like strings and maps incur allocations
+/// - Use `isAligned(n)` to check alignment before numeric list reads
+/// - `measureFixedSize()` internally encodes to compute size — avoid in tight loops
+///
+/// ### Example
 /// ```dart
-/// final reader = BincodeReader(encodedBytes);
-/// try {
-///   final id = reader.readU32();
-///   final name = reader.readString();
-///   final score = reader.readOptionF64();
-///   // ... read other data
-/// } on BincodeException catch (e) {
-///   print('Failed to decode Bincode data: $e');
-/// }
+/// final reader = BincodeReader.fromBytes(data);
+/// final vec3 = reader.readNestedObjectForFixed(Vec3());
+/// final name = reader.readString();
 /// ```
+///
+/// ### When Zero-Copy Applies
+/// - Fixed-size primitives and aligned numeric arrays: `Float32List`, `Int16List`, etc.
+/// - Manual alignment via [align()] allows optimal performance
+/// - No memory is copied for raw byte views (`readRawBytes`, `readUint8List`)
+///
+/// ### When Fallback Occurs
+/// - If the buffer is misaligned (e.g. unaligned `u32` or `f64`)
+/// - If the type is variable-length (e.g. `String`, `Vec<T>`)
+/// - If decoding into high-level Dart types like `List<T>` or `Map<K,V>`
+///
 class BincodeReader implements BincodeReaderBuilder {
-  final ByteDataWrapper _wrapper;
-  final bool unsafe;
+  final Uint8List _bytes;
+  late final ByteData _view;
+  int _pos = 0; // read cursor
+  final _tmpWriter = BincodeWriter();
 
-  /// Creates a new [BincodeReader] to read from the provided [bytes].
-  ///
-  /// The reader maintains its own position cursor within the data.
-  ///
-  /// - [bytes]: A [Uint8List] containing the Bincode-encoded binary data.
-  /// - [unsafe]: If `true`, bounds checks (ensuring enough data remains for a read)
-  ///   are skipped for performance. Reading past the end of the buffer in unsafe mode
-  ///   will result in a `RangeError` crash. Defaults to `false` (safe).
-  BincodeReader(Uint8List bytes, {this.unsafe = false})
-      : _wrapper = ByteDataWrapper(bytes.buffer,
-            parentOffset: bytes.offsetInBytes, length: bytes.length);
-
-  /// Internal constructor for creating a reader from an existing [ByteDataWrapper].
-  /// Used by factory constructors like [fromFile].
-  BincodeReader._fromWrapper(this._wrapper, this.unsafe);
-
-  /// Asynchronously creates a [BincodeReader] by reading data from a file at the given [path].
-  ///
-  /// Returns a [Future] that completes with the [BincodeReader] instance after
-  /// the file content has been loaded into memory.
-  ///
-  /// - [path]: The file system path to the Bincode data file.
-  /// - [unsafe]: Sets the `unsafe` mode for the created reader (see main constructor).
-  static Future<BincodeReader> fromFile(String path,
-      {bool unsafe = false}) async {
-    final wrapper = await ByteDataWrapper.fromFile(path);
-    return BincodeReader._fromWrapper(wrapper, unsafe);
+  /// Wrap an existing byte buffer.
+  BincodeReader(this._bytes) {
+    _view = ByteData.view(
+      _bytes.buffer,
+      _bytes.offsetInBytes,
+      _bytes.lengthInBytes,
+    );
   }
 
-  // -----------------------------
-  // Positioning
-  // -----------------------------
-
-  /// Gets the current read cursor position within the underlying buffer.
-  /// Indicates the byte offset where the next read operation will start.
-  @override
-  int get position => _wrapper.position;
-
-  /// Sets the current read cursor position to an absolute byte offset [value].
+  /// Checks whether [bytes] can be successfully decoded into the given [instance].
   ///
-  /// Allows random access within the buffer. The [value] must be within the
-  /// valid range `[0, buffer_length]`. Setting the position beyond the end
-  /// will cause subsequent reads to fail.
-  /// Throws a [RangeError] if [value] is outside the valid range (handled by buffer wrapper).
-  @override
-  set position(int value) => _wrapper.position = value;
-
-  /// Moves the read cursor position by [offset] bytes relative to the current position.
+  /// Internally attempts to decode [bytes] using [decode] with the provided
+  /// [BincodeDecodable] instance. If decoding throws, returns `false`; otherwise, `true`.
   ///
-  /// Use a positive [offset] to move forward (skip bytes), negative to move backward.
-  /// Throws a [RangeError] if the resulting position is outside the valid buffer range.
-  @override
-  void seek(int offset) => position += offset; // Relies on setter's range check
-
-  /// Sets the read cursor to the absolute byte position [absolutePosition].
-  /// Alias for setting the [position] property directly.
-  @override
-  void seekTo(int absolutePosition) => position = absolutePosition;
-
-  /// Resets the read cursor position to the beginning of the buffer (index 0).
-  @override
-  void rewind() => position = 0;
-
-  /// Moves the read cursor position to the end of the available data (the buffer's length).
-  /// Subsequent reads will fail unless the position is moved back.
-  @override
-  void skipToEnd() => position = _wrapper.length;
-
-  /// Returns the number of bytes remaining from the current position to the end of the buffer.
-  /// Useful for checking available data before reads, especially in safe mode.
-  int remainingBytes() {
-    return _wrapper.length - _wrapper.position;
-  }
-
-  // -----------------------------
-  // Primitives
-  // -----------------------------
-
-  /// Reads an unsigned 8-bit integer (byte) from the buffer.
+  /// This method is useful for pre-validation before decoding, e.g. when loading
+  /// user-supplied or external binary data.
   ///
-  /// Corresponds to deserializing a `u8` in Rust. Advances position by 1 byte.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Header { version: u8 }
+  /// #### Example
+  /// ```dart
+  /// final data = ...; // Uint8List from disk/network
+  /// final ok = BincodeReader.isValidBincode(data, MyStruct());
+  /// if (ok) {
+  ///   final instance = BincodeReader.decode(data, MyStruct());
+  /// }
   /// ```
-  @override
-  int readU8() => unsafe
-      ? _wrapper.readUint8()
-      : _readOrThrow(() => _wrapper.readUint8(), "u8");
-
-  /// Reads an unsigned 16-bit integer (Little Endian) from the buffer.
   ///
-  /// Corresponds to deserializing a `u16` in Rust. Advances position by 2 bytes.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Item { item_code: u16 }
-  /// ```
-  @override
-  int readU16() => unsafe
-      ? _wrapper.readUint16()
-      : _readOrThrow(() => _wrapper.readUint16(), "u16");
-
-  /// Reads an unsigned 32-bit integer (Little Endian) from the buffer.
-  ///
-  /// Corresponds to deserializing a `u32` in Rust. Advances position by 4 bytes.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Message { message_id: u32 }
-  /// ```
-  @override
-  int readU32() => unsafe
-      ? _wrapper.readUint32()
-      : _readOrThrow(() => _wrapper.readUint32(), "u32");
-
-  /// Reads an unsigned 64-bit integer (Little Endian) from the buffer.
-  ///
-  /// Reads two 32-bit parts and combines them. Advances position by 8 bytes.
-  /// Corresponds to deserializing a `u64` in Rust.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains for either part.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Timestamps { creation_time_ns: u64 }
-  /// ```
-  @override
-  int readU64() {
-    if (unsafe) {
-      final low = _wrapper.readUint32();
-      final high = _wrapper.readUint32();
-      return (high << 32) | low;
-    } else {
-      final low = _readOrThrow(() => _wrapper.readUint32(), "low part of u64");
-      final high =
-          _readOrThrow(() => _wrapper.readUint32(), "high part of u64");
-      return (high << 32) | low;
+  /// #### Warning
+  /// This method **runs decoding logic** internally — it's not a lightweight check.
+  /// Avoid using it in tight loops or performance-critical paths.
+  static bool isValidBincode(Uint8List bytes, BincodeDecodable instance) {
+    try {
+      decode(bytes, instance);
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
-  /// Reads a signed 8-bit integer from the buffer.
+  /// Deserializes a fixed-size [instance] from [bytes] using the Bincode layout.
   ///
-  /// Corresponds to deserializing an `i8` in Rust. Advances position by 1 byte.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
+  /// This is used when the layout of the object is known and does **not** include
+  /// any dynamic-length fields (e.g. no `Vec`, `String`, or slices).
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// Internally, this wraps the provided [bytes] in a [BincodeReader] and calls
+  /// [readNestedObjectForFixed] to decode the instance directly.
+  ///
+  /// #### Rust Context Example:
   /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Adjustment { offset: i8 }
+  /// #[derive(Serialize, Deserialize)]
+  /// struct Vec3 {
+  ///     x: f32,
+  ///     y: f32,
+  ///     z: f32,
+  /// }
+  /// ```
+  ///
+  /// #### Example
+  /// ```dart
+  /// final bytes = ...; // [12, 0, 0, 65, ...]
+  /// final vec = BincodeReader.decodeFixed(bytes, Vec3());
+  /// print(vec.x); // decoded f32
+  /// ```
+  ///
+  /// **Layout:** `[field bytes...`] with no length prefix
+  static T decodeFixed<T extends BincodeCodable>(Uint8List bytes, T instance) {
+    final reader = BincodeReader(bytes);
+    return reader.readNestedObjectForFixed(instance);
+  }
+
+  /// Deserializes a dynamically-sized [instance] from [bytes] using Bincode layout.
+  ///
+  /// This is used when the object may contain dynamic-length fields such as
+  /// `Vec`, `String`, or nested optional values. The caller supplies an empty
+  /// instance of type [T], which is populated via `decode()` logic.
+  ///
+  /// Internally, wraps the bytes in a [BincodeReader] and passes it to the instance’s
+  /// `decode(reader)` method.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Serialize, Deserialize)]
+  /// struct User {
+  ///     name: String,
+  ///     scores: Vec<u32>,
+  /// }
+  /// ```
+  ///
+  /// #### Example
+  /// ```dart
+  /// final bytes = ...; // serialized `User`
+  /// final user = BincodeReader.decode(bytes, User());
+  /// print(user.name); // "Alice"
+  /// ```
+  ///
+  /// **Layout:** Bincode-encoded structure as `[field1][field2]...` with internal lengths if needed
+  static T decode<T extends BincodeDecodable>(Uint8List bytes, T instance) {
+    final reader = BincodeReader(bytes);
+    instance.decode(reader);
+    return instance;
+  }
+
+  /// Wraps a [Uint8List] into a [BincodeReader] for reading.
+  ///
+  /// Creates a new [BincodeReader] that reads from the provided [data] buffer.
+  /// The reader starts at position 0 and provides access to all decoding
+  /// utilities over the raw binary.
+  ///
+  /// This is the standard constructor when you already have a byte array,
+  /// such as from file I/O, sockets, or another deserializer.
+  ///
+  /// #### Example
+  /// ```dart
+  /// final data = file.readAsBytesSync(); // returns Uint8List
+  /// final reader = BincodeReader.fromBytes(data);
+  /// final id = reader.readU32();
+  /// ```
+  ///
+  /// **Layout:** Uses entire byte list as-is with no slicing or copying.
+  static BincodeReader fromBytes(Uint8List data) => BincodeReader(data);
+
+  /// Wraps a [ByteBuffer] into a [BincodeReader] with optional offset and length.
+  ///
+  /// This is useful when decoding from shared memory, slices, or typed views
+  /// such as `Float32List.buffer`. It allows you to read from a subregion of a buffer
+  /// without copying or reallocating data.
+  ///
+  /// - [offset]: byte offset into the buffer where reading should begin.
+  /// - [length]: optional number of bytes to read. If omitted, reads until end of buffer.
+  ///
+  /// #### Example
+  /// ```dart
+  /// final full = ByteData(64);
+  /// final reader = BincodeReader.fromBuffer(full.buffer, 16, 32); // read 32 bytes from offset 16
+  /// final val = reader.readF64();
+  /// ```
+  ///
+  /// #### Performance
+  /// This method avoids allocation by creating a [Uint8List.view] over the buffer.
+  ///
+  /// **Layout:** `[buffer[offset] ... buffer[offset + length]]`
+  static BincodeReader fromBuffer(ByteBuffer buffer,
+      [int offset = 0, int? length]) {
+    final view =
+        Uint8List.view(buffer, offset, length ?? buffer.lengthInBytes - offset);
+    return BincodeReader(view);
+  }
+
+  void _check(int length, [int? at]) {
+    assert(() {
+      final start = at ?? _pos;
+      if (start < 0 || start + length > _bytes.lengthInBytes) {
+        throw RangeError('Read out of bounds: $length bytes at $start.');
+      }
+      return true;
+    }());
+  }
+
+  // ── Positioning ─────────────────────────────────────────────────────────
+  /// Gets or sets the current read cursor position (in bytes).
+  ///
+  /// Use this to inspect or manipulate the position during deserialization,
+  /// such as for rewinding, skipping, or jumping back to a previous offset.
+  ///
+  /// #### Example
+  /// ```dart
+  /// final reader = BincodeReader.fromBytes(bytes);
+  /// print(reader.position); // 0
+  /// reader.readU32();
+  /// print(reader.position); // 4
+  /// reader.position = 0;    // rewind manually
+  /// ```
+  ///
+  /// Throws [RangeError] if the new position is outside of the valid range.
+  @override
+  int get position => _pos;
+  @override
+  set position(int v) {
+    _check(0, v);
+    _pos = v;
+  }
+
+  /// Moves the read cursor forward by [offset] bytes.
+  ///
+  /// This is a relative move operation. Negative values are allowed
+  /// to move backwards within the buffer, as long as the resulting position
+  /// is within bounds.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.seek(8);  // skip 8 bytes forward
+  /// reader.seek(-4); // rewind 4 bytes
+  /// ```
+  ///
+  /// Throws [RangeError] if the resulting position is out of bounds.
+  @override
+  void seek(int offset) => position += offset;
+
+  /// Sets the read cursor to the absolute byte offset [absolute].
+  ///
+  /// This is equivalent to `reader.position = offset`, but may improve
+  /// code clarity for forward jumps or manual pointer positioning.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.seekTo(16); // jump to byte index 16
+  /// ```
+  ///
+  /// Throws [RangeError] if the position is invalid.
+  @override
+  void seekTo(int absolute) => position = absolute;
+
+  /// Resets the read cursor to the beginning (byte index 0).
+  ///
+  /// This is a convenience method for restarting a read session
+  /// from the start of the buffer.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.readU64();
+  /// reader.rewind();       // go back to start
+  /// final again = reader.readU64();
+  /// ```
+  ///
+  /// Does not modify or clear any bytes.
+  @override
+  void rewind() => _reset();
+
+  /// Internal: Resets the read cursor to 0 without modifying buffer contents.
+  void _reset() {
+    _pos = 0;
+  }
+
+  /// Replaces the current buffer with [newBytes] and resets position.
+  ///
+  /// This allows reusing the same reader instance with new binary data
+  /// without allocating a new [BincodeReader].
+  ///
+  /// #### Example
+  /// ```dart
+  /// final reader = BincodeReader(bytesA);
+  /// reader.readU32();
+  /// reader.resetWith(bytesB); // reuse same reader for different data
+  /// ```
+  ///
+  /// The read position is reset to 0. Throws if [newBytes] is shorter than required reads.
+  void resetWith(Uint8List newBytes) {
+    _pos = 0;
+    _bytes.setAll(0, newBytes);
+    _view = ByteData.view(
+      _bytes.buffer,
+      _bytes.offsetInBytes,
+      _bytes.lengthInBytes,
+    );
+  }
+
+  /// Moves the read cursor to the end of the buffer.
+  ///
+  /// Useful for fast‑forwarding to the end after partial reads,
+  /// or for skipping trailing content.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipToEnd();
+  /// assert(reader.remainingBytes == 0);
   /// ```
   @override
-  int readI8() => unsafe
-      ? _wrapper.readInt8()
-      : _readOrThrow(() => _wrapper.readInt8(), "i8");
+  void skipToEnd() => _pos = _bytes.lengthInBytes;
 
-  /// Reads a signed 16-bit integer (Little Endian) from the buffer.
+  /// Removes all null (`\x00`) characters from a [String].
   ///
-  /// Corresponds to deserializing an `i16` in Rust. Advances position by 2 bytes.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
+  /// Useful for cleaning up fixed‑length strings that were padded
+  /// with nulls during encoding.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// #### Example
+  /// ```dart
+  /// final s = 'User\x00\x00\x00';
+  /// final clean = BincodeReader.stripNulls(s);
+  /// print(clean); // 'User'
+  /// ```
+  static String stripNulls(String s) => s.replaceAll('\x00', '');
+
+  /// Overwrites the current buffer with [data] and resets the read cursor.
+  ///
+  /// Reuses the reader for new binary data without allocating a new instance.
+  /// The buffer must be at least as large as the new data.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.copyFrom(Uint8List.fromList([1, 2, 3]));
+  /// print(reader.readU8()); // 1
+  /// ```
+  ///
+  /// Warning: Only use this if the internal `_bytes` buffer is large enough to hold [data].
+  void copyFrom(Uint8List data) {
+    _bytes.setAll(0, data);
+    _pos = 0;
+  }
+
+  /// Returns the number of unread bytes left in the buffer.
+  ///
+  /// This can be used to detect under‑reads or to check availability
+  /// before attempting a read.
+  ///
+  /// #### Example
+  /// ```dart
+  /// print('Remaining: ${reader.remainingBytes} bytes');
+  /// ```
+  int get remainingBytes => _bytes.lengthInBytes - _pos;
+
+  /// Returns true if the current read position is aligned to [alignment] bytes.
+  ///
+  /// Useful before reading multi‑byte primitives to avoid misalignment traps,
+  /// especially when using `TypedData.view` directly.
+  ///
+  /// #### Example
+  /// ```dart
+  /// if (!reader.isAligned(4)) {
+  ///   reader.align(4); // optional
+  /// }
+  /// ```
+  bool isAligned(int alignment) => (_pos % alignment) == 0;
+
+  /// Aligns the read cursor to the next [alignment]‑byte boundary.
+  ///
+  /// If the current position is not aligned (i.e., `position % alignment != 0`),
+  /// this method advances the cursor forward by the required number of bytes
+  /// to reach the next aligned offset.
+  ///
+  /// This is useful when reading native types that require aligned memory
+  /// access (e.g., `Float64List.view`) or matching formats that include padding.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.seek(3);        // misaligned for 4‑byte access
+  /// reader.align(4);       // moves to byte offset 4
+  /// print(reader.position); // 4
+  /// ```
+  ///
+  /// Throws a [RangeError] if alignment padding would exceed buffer length.
+  void align(int alignment) {
+    final misalignment = _pos % alignment;
+    if (misalignment != 0) {
+      final pad = alignment - misalignment;
+      _check(pad);
+      _pos += pad;
+    }
+  }
+
+  /// Peeks the data by saving the current read position and executing the provided [body].
+  /// This allows for peeking multiple values without advancing the reader position.
+  ///
+  /// The position is restored after the operation, ensuring no side effects on the reader's state.
+  ///
+  /// #### Example Usage:
+  ///
+  /// ```dart
+  /// final reader = BincodeReader(bytes);
+  /// final values = reader.peekSession(() {
+  ///   final u8Value = reader.readU8();   // Peek a U8 value
+  ///   final u16Value = reader.readU16(); // Peek a U16 value
+  ///   final u32Value = reader.readU32(); // Peek a U32 value
+  ///   return [u8Value, u16Value, u32Value]; // Return the values
+  /// });
+  /// print(values);  // Output: [value1, value2, value3]
+  /// ```
+  ///
+  /// This method is useful when you need to peek multiple values, while maintaining
+  /// the current reader position intact.
+  T peekSession<T>(T Function() body) {
+    final savedPosition = _pos; 
+    try {
+      return body(); 
+    } finally {
+      _pos = savedPosition;
+    }
+  }
+
+  /// Static utility to peek a `u64` length prefix from the start of a buffer.
+  ///
+  /// Does **not** require a full reader, useful for inspecting list or blob lengths before allocation.
+  ///
+  /// #### Example
+  /// ```dart
+  /// final len = BincodeReader.peekLength(myBytes);
+  /// ```
+  static int peekLength(Uint8List bytes) {
+    final view = ByteData.view(bytes.buffer, bytes.offsetInBytes);
+    return view.getUint64(0, Endian.little); // Read the 8 bytes from the start
+  }
+
+  /// Skips an entire optional value (Bincode `Option<T>`).
+  ///
+  /// Reads the 1-byte tag (`0` = None, `1` = Some), and if the tag indicates a value,
+  /// executes [skipValue] to advance past the encoded bytes of `T`.
+  /// If the tag is invalid (neither 0 nor 1), throws [InvalidOptionTagException].
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipOption(() => reader.skipF64()); // skip Option<f64>
+  /// reader.skipOption(() => reader.skipString()); // skip Option<String>
+  /// ```
+  void skipOption<T>(void Function() skipValue) {
+    final tag = readU8();
+    if (tag == 1) {
+      skipValue();
+    } else if (tag != 0) {
+      throw InvalidOptionTagException(tag);
+    }
+  }
+
+  /// Skips a single byte (unsigned 8-bit, `u8`) in the buffer.
+  ///
+  /// Advances the cursor by 1 byte.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipU8(); // skip 1 byte
+  /// ```
+  void skipU8() => seek(1);
+
+  /// Skips a 2-byte unsigned integer (`u16`) in the buffer.
+  ///
+  /// Advances the cursor by 2 bytes.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipU16(); // skip 2 bytes
+  /// ```
+  void skipU16() => seek(2);
+
+  /// Skips a 4-byte unsigned integer (`u32`) in the buffer.
+  ///
+  /// Advances the cursor by 4 bytes.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipU32(); // skip 4 bytes
+  /// ```
+  void skipU32() => seek(4);
+
+  /// Skips an 8-byte unsigned integer (`u64`) in the buffer.
+  ///
+  /// Advances the cursor by 8 bytes.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipU64(); // skip 8 bytes
+  /// ```
+  void skipU64() => seek(8);
+
+  /// Skips a 4-byte IEEE-754 floating point value (`f32`) in the buffer.
+  ///
+  /// Advances the cursor by 4 bytes.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipF32(); // skip f32
+  /// ```
+  void skipF32() => seek(4);
+
+  /// Skips an 8-byte IEEE-754 floating point value (`f64`) in the buffer.
+  ///
+  /// Advances the cursor by 8 bytes.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipF64(); // skip f64
+  /// ```
+  void skipF64() => seek(8);
+
+  /// Skips the next [n] raw bytes from the buffer.
+  ///
+  /// No decoding is performed. Useful for skipping unknown or irrelevant binary sections.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipBytes(16); // skip 16 bytes
+  /// ```
+  void skipBytes(int n) => seek(n);
+
+  /// Skips a dynamic UTF‑8 string field.
+  ///
+  /// Reads a `u64` length prefix and advances the cursor by that many bytes,
+  /// without decoding the string.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipString(); // skip a Bincode-encoded string
+  /// ```
+  void skipString() {
+    final len = readU64();
+    seek(len);
+  }
+
+  /// Skips a fixed-length UTF‑8 string field of exactly [n] bytes.
+  ///
+  /// Advances the cursor by [n] bytes without decoding. Does not trim nulls.
+  ///
+  /// #### Example
+  /// ```dart
+  /// reader.skipFixedString(32); // skip a 32-byte label field
+  /// ```
+  void skipFixedString(int n) => seek(n);
+
+  /// Computes the total byte size of a Bincode list `(Vec<T>)` given [bytes] and per-element size.
+  ///
+  /// Reads the first 8 bytes as a `u64` length prefix from [bytes] (without mutation),
+  /// then returns the total number of bytes the full list would occupy in memory,
+  /// including the prefix and all element payloads.
+  ///
+  /// Does **not** validate or decode actual elements; it only calculates size.
+  ///
+  /// #### Example
+  /// ```dart
+  /// final bytes = Uint8List.fromList([3, 0, 0, 0, 0, 0, 0, 0, ...]);
+  /// final totalSize = BincodeReader.measureListByteSize(bytes, 4); // 8 + 3 * 4 = 20
+  /// ```
+  ///
+  /// #### Use Case
+  /// Useful for buffer pre-checks, slicing payloads, or skipping over a serialized list.
+  static int measureListByteSize(Uint8List bytes, int elementSize) {
+    final len = peekLength(bytes);
+    return 8 + len * elementSize;
+  }
+
+  /// Checks whether at least [count] bytes remain to be read in the buffer.
+  ///
+  /// Returns `true` if there are enough bytes starting from the current [position]
+  /// to safely read [count] bytes without hitting the end of the buffer.
+  ///
+  /// #### Example
+  /// ```dart
+  /// if (reader.hasBytes(4)) {
+  ///   final value = reader.readU32();
+  /// }
+  /// ```
+  bool hasBytes(int count) => remainingBytes >= count;
+
+  // ── Primitive Reads ───────────────────────────────────────────────────────
+
+  /// Reads an unsigned 8‑bit integer (`u8`) from the buffer.
+  ///
+  /// 1. Checks that at least 1 byte is available.
+  /// 2. Reads the byte at the current position.
+  /// 3. Advances the cursor by 1.
+  ///
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct Point { x_coord: i16 }
+  /// struct Packet { id: u8 }
+  /// // [0xFF] deserializes to Packet { id: 255 }
   /// ```
+  ///
+  /// **Layout:** `[u8 byte]`
   @override
-  int readI16() => unsafe
-      ? _wrapper.readInt16()
-      : _readOrThrow(() => _wrapper.readInt16(), "i16");
+  @pragma('vm:always-inline')
+  int readU8() {
+    _check(1);
+    final p = _pos;
+    _pos = p + 1;
+    return _view.getUint8(p);
+  }
 
-  /// Reads a signed 32-bit integer (Little Endian) from the buffer.
+  /// Reads an unsigned 16‑bit integer (`u16`) in little-endian order.
   ///
-  /// Corresponds to deserializing an `i32` in Rust. Advances position by 4 bytes.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
+  /// 1. Checks that at least 2 bytes are available.
+  /// 2. Interprets bytes at the current position as a `u16`.
+  /// 3. Advances the cursor by 2.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct Event { status_code: i32 }
+  /// struct Header { version: u16 }
   /// ```
+  ///
+  /// **Layout:** `[low byte][high byte]`
   @override
-  int readI32() => unsafe
-      ? _wrapper.readInt32()
-      : _readOrThrow(() => _wrapper.readInt32(), "i32");
+  @pragma('vm:always-inline')
+  int readU16() {
+    _check(2);
+    final p = _pos;
+    _pos = p + 2;
+    return _view.getUint16(p, Endian.little);
+  }
 
-  /// Reads a signed 64-bit integer (Little Endian) from the buffer.
+  /// Reads an unsigned 32‑bit integer (`u32`) in little-endian order.
   ///
-  /// Corresponds to deserializing an `i64` in Rust. Advances position by 8 bytes.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
+  /// 1. Checks that at least 4 bytes are available.
+  /// 2. Decodes the bytes at current position as a `u32`.
+  /// 3. Advances the cursor by 4.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct FileInfo { file_id: i64 }
+  /// struct Record { count: u32 }
   /// ```
+  ///
+  /// **Layout:** `[byte0][byte1][byte2][byte3]` (little-endian)
   @override
-  int readI64() => unsafe
-      ? _wrapper.readInt64()
-      : _readOrThrow(() => _wrapper.readInt64(), "i64");
+  @pragma('vm:always-inline')
+  int readU32() {
+    _check(4);
+    final p = _pos;
+    _pos = p + 4;
+    return _view.getUint32(p, Endian.little);
+  }
 
-  /// Reads a 32-bit float (IEEE 754, Little Endian) from the buffer.
+  /// Reads an unsigned 64‑bit integer (`u64`) in little-endian order.
   ///
-  /// Corresponds to deserializing an `f32` in Rust. Advances position by 4 bytes.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
+  /// 1. Checks for at least 8 bytes.
+  /// 2. Interprets 8 bytes at position as a `u64`.
+  /// 3. Advances the cursor by 8.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct Measurement { value: f32 }
+  /// struct Timestamp { nanos: u64 }
+  /// // [0x08, 0x07, ..., 0x00] → 64-bit integer
   /// ```
+  ///
+  /// **Layout:** `[b0][b1][b2][b3][b4][b5][b6][b7]` (little-endian)
   @override
-  double readF32() => unsafe
-      ? _wrapper.readFloat32()
-      : _readOrThrow(() => _wrapper.readFloat32(), "f32");
+  @pragma('vm:always-inline')
+  int readU64() {
+    _check(8);
+    final p = _pos;
+    _pos = p + 8;
+    return _view.getUint64(p, Endian.little);
+  }
 
-  /// Reads a 64-bit float (IEEE 754, Little Endian) from the buffer.
+  /// Reads a signed 8‑bit integer (`i8`) from the buffer.
   ///
-  /// Corresponds to deserializing an `f64` in Rust. Advances position by 8 bytes.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
+  /// Internally uses [readU8] and converts the byte using two’s complement.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct Coordinates { latitude: f64 }
+  /// struct Signed { delta: i8 }
+  /// // [0xFF] → -1
   /// ```
+  ///
+  /// **Layout:** `[i8 byte]`
   @override
-  double readF64() => unsafe
-      ? _wrapper.readFloat64()
-      : _readOrThrow(() => _wrapper.readFloat64(), "f64");
+  int readI8() => readU8().toSigned(8);
 
-  /// Reads exactly [count] bytes from the buffer and returns them as a `List<int>` (typically a `Uint8List` view).
+  /// Reads a signed 16‑bit integer (`i16`) in little-endian format.
   ///
-  /// Use this for reading raw byte sequences corresponding to Rust's `&[u8]` or fixed `[u8; N]`.
-  /// Advances the position by [count] bytes.
-  /// If `unsafe` is false, throws [BincodeReadException] if fewer than [count] bytes remain.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
+  /// Uses [readU16] and converts using two’s complement.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Coord { y: i16 }
+  /// // [0xFC, 0xFF] → -4 (0xFFFC)
+  /// ```
+  ///
+  /// **Layout:** `[low byte][high byte]` (two’s complement)
+  @override
+  int readI16() => readU16().toSigned(16);
+
+  /// Reads a signed 32‑bit integer (`i32`) in little-endian format.
+  ///
+  /// Reads with [readU32] and interprets with two’s complement.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Vector { dx: i32 }
+  /// // [0xFF, 0xFF, 0xFF, 0xFF] → -1
+  /// ```
+  ///
+  /// **Layout:** `[b0][b1][b2][b3]` (two’s complement, little-endian)
+  @override
+  int readI32() => readU32().toSigned(32);
+
+  /// Reads a signed 64‑bit integer (`i64`) in little-endian format.
+  ///
+  /// Reads using [readU64], then converts using two’s complement.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Delta { offset: i64 }
+  /// // [0xFF ... x8] → -1
+  /// ```
+  ///
+  /// **Layout:** `[b0..b7]` (two’s complement, little-endian)
+  @override
+  int readI64() => readU64().toSigned(64);
+
+  /// Reads a 32‑bit floating point value (`f32`) in little-endian format.
+  ///
+  /// 1. Reads 4 bytes as IEEE 754 `f32`.
+  /// 2. Advances cursor by 4.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Vec2 { x: f32 }
+  /// // [0x00, 0x00, 0x80, 0x3F] → 1.0
+  /// ```
+  ///
+  /// **Layout:** IEEE 754 binary32 (little-endian)
+  @override
+  @pragma('vm:always-inline')
+  double readF32() {
+    _check(4);
+    final p = _pos;
+    _pos = p + 4;
+    return _view.getFloat32(p, Endian.little);
+  }
+
+  /// Reads a 32‑bit floating point value (`f32`) in little-endian format.
+  ///
+  /// 1. Reads 4 bytes as IEEE 754 `f32`.
+  /// 2. Advances cursor by 4.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Vec2 { x: f32 }
+  /// // [0x00, 0x00, 0x80, 0x3F] → 1.0
+  /// ```
+  ///
+  /// **Layout:** IEEE 754 binary32 (little-endian)
+  @override
+  @pragma('vm:always-inline')
+  double readF64() {
+    _check(8);
+    final p = _pos;
+    _pos = p + 8;
+    return _view.getFloat64(p, Endian.little);
+  }
+
+  // ── Common Reads ───────────────────────────────────────────────────────────
+
+  /// Reads a boolean value (`bool`) from a single byte.
+  ///
+  /// 1. Reads 1 byte using [readU8].
+  /// 2. Interprets `0` as `false`, `1` as `true`.
+  /// 3. Throws [InvalidBooleanValueException] if value is neither `0` nor `1`.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Flags {
+  ///     active: bool,
+  /// }
+  /// // [0x01] → true, [0x00] → false, [0x42] → error
+  /// ```
+  ///
+  /// **Layout:** `[1]` for true, `[0]` for false
+  @override
+  bool readBool() {
+    final b = readU8();
+    if (b > 1) throw InvalidBooleanValueException(b);
+    return b == 1;
+  }
+
+  /// Reads a raw sequence of [count] bytes from the buffer as `Uint8List`.
+  ///
+  /// 1. Checks that [count] bytes are available.
+  /// 2. Returns a view over the exact bytes starting at current cursor.
+  /// 3. Advances the cursor by [count].
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Blob {
+  ///     raw: [u8; 4],
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[u8, u8, ..., u8]` (exactly [count] bytes)
+  @override
+  @pragma('vm:prefer-inline')
+  Uint8List readRawBytes(int count) {
+    _check(count);
+    final p = _pos;
+    _pos = p + count;
+    return Uint8List.view(
+      _bytes.buffer,
+      _bytes.offsetInBytes + p,
+      count,
+    );
+  }
+
+  /// Reads [count] bytes and returns them as a list of integers.
+  ///
+  /// This method is functionally identical to [readRawBytes], but
+  /// explicitly returns a `List<int>` instead of `Uint8List`.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct RawData {
+  ///     content: Vec<u8>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[u8, u8, ..., u8]`
+  @override
+  List<int> readBytes(int count) => readRawBytes(count);
+
+  /// Reads a UTF‑8 encoded string prefixed by a `u64` length header.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Message {
+  ///     text: String,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[len: u64][utf8-bytes...]`
+  @override
+  String readString() {
+    final len = readU64();
+    return utf8.decode(readRawBytes(len));
+  }
+
+  /// Reads a fixed-length UTF-8 encoded string of exactly [length] bytes.
+  ///
+  /// This method does not strip trailing nulls or check UTF-8 termination.
+  /// Use [readCleanFixedString] for zero-padded fields.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Header {
+  ///     label: [u8; 8],
+  /// }
+  /// // [b"test\x00\x00\x00\x00"] → "test\u0000\u0000\u0000\u0000"
+  /// ```
+  ///
+  /// **Layout:** `[utf8...][0x00 0x00 ...]` (exactly [length] bytes)
+  @override
+  String readFixedString(int length) {
+    return utf8.decode(readRawBytes(length));
+  }
+
+  /// Reads a fixed-length string of [length] bytes, and removes null padding.
+  ///
+  /// 1. Reads [length] bytes as UTF-8.
+  /// 2. Strips all `\x00` null characters.
+  /// 3. Useful for fixed-size fields like `[u8; 16]` in Rust.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Label {
+  ///     name: [u8; 8],
+  /// }
+  /// // [b"abc\x00\x00\x00\x00\x00"] → "abc"
+  /// ```
+  ///
+  /// **Layout:** `[utf8...][padding...]` → cleaned
+  @override
+  String readCleanFixedString(int length) {
+    return readFixedString(length).replaceAll('\x00', '');
+  }
+
+  // ── Optionals ────────────────────────────────────────────────────────────
+
+  /// Reads an optional value using Bincode’s `Option<T>` encoding format.
+  ///
+  /// 1. Reads a tag byte:
+  ///    - `0` → returns `null`
+  ///    - `1` → calls [reader] to read and return a value
+  ///    - anything else → throws [InvalidOptionTagException]
+  ///
+  /// This method underpins all `readOption*` methods and enforces strict tag validation.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Config {
+  ///     maybe_value: Option<u32>,
+  /// }
+  /// // [0] → None
+  /// // [1][value bytes...] → Some(value)
+  /// ```
+  ///
+  /// **Layout:** `[tag: u8][value?]`
+  @pragma('vm:always-inline')
+  T? _readTagged<T>(T Function() reader) {
+    final tag = readU8();
+    if (tag == 0) return null;
+    if (tag != 1) throw InvalidOptionTagException(tag);
+    return reader();
+  }
+
+  /// Reads an optional `bool` value using Bincode’s `Option<bool>` layout.
+  ///
+  /// Delegates to `_readTagged` and reads one byte if tag is `1`.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Flags {
+  ///     active: Option<bool>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][bool byte]` if present
+  @override
+  bool? readOptionBool() => _readTagged(readBool);
+
+  /// Reads an optional unsigned 8-bit integer (`u8`) from the buffer.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Config {
+  ///     level: Option<u8>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][u8 byte]` if present
+  @override
+  int? readOptionU8() => _readTagged(readU8);
+
+  /// Reads an optional `u16` value from the buffer in little-endian format.
+  ///
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
   /// struct Packet {
-  ///     signature: [u8; 64], // Read with readBytes(64)
+  ///     checksum: Option<u16>,
   /// }
   /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][u16 bytes]` if present
   @override
-  List<int> readBytes(int count) => unsafe
-      ? _wrapper.asUint8List(count)
-      : _readOrThrow(() => _wrapper.asUint8List(count), "$count bytes");
+  int? readOptionU16() => _readTagged(readU16);
 
-  /// Reads exactly [count] bytes from the buffer and returns them as a new [Uint8List] copy.
+  /// Reads an optional `u32` value from the buffer.
   ///
-  /// Use this when you need an independent copy of the read bytes, rather than a view.
-  /// Advances the position by [count] bytes.
-  /// If `unsafe` is false, throws [BincodeReadException] if fewer than [count] bytes remain.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
-  @override
-  Uint8List readRawBytes(int count) {
-    final bytesList = readBytes(count);
-    if (bytesList is Uint8List &&
-        bytesList.offsetInBytes == 0 &&
-        bytesList.lengthInBytes == bytesList.buffer.lengthInBytes) {
-      return Uint8List.fromList(bytesList);
-    }
-    return Uint8List.fromList(bytesList);
-  }
-
-  // -----------------------------
-  // Boolean
-  // -----------------------------
-
-  /// Reads a boolean from the buffer, expecting a single byte (0 for false, 1 for true).
-  ///
-  /// Corresponds to deserializing a `bool` in Rust. Advances position by 1 byte.
-  /// If `unsafe` is false:
-  ///   - Throws [BincodeReadException] if not enough data remains.
-  ///   - Throws [InvalidBooleanValueException] if the byte read is neither 0 nor 1.
-  /// If `unsafe` is true:
-  ///   - Skips checks; reading past bounds throws [RangeError].
-  ///   - Interprets any non-zero byte as `true`.
-  ///
-  /// #### Rust Context Example (Deserialization):
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct Status { is_active: bool }
-  /// ```
-  @override
-  bool readBool() {
-    // readU8 handles safe/unsafe reading and throws if needed (RangeError or BincodeReadException)
-    final byte = readU8();
-    if (unsafe) {
-      // In unsafe mode, mimic typical C-like bool conversion (0 is false, non-zero is true)
-      return byte != 0;
-    } else {
-      // In safe mode, strictly enforce Bincode standard (0 or 1)
-      if (byte != 0 && byte != 1) {
-        throw InvalidBooleanValueException(byte);
-      }
-      return byte == 1;
-    }
-  }
-
-  // -----------------------------
-  // String Encoding (Reader Side)
-  // -----------------------------
-
-  /// Reads a string prefixed with a U64 length from the buffer.
-  ///
-  /// First reads the U64 length, then reads that many bytes and decodes them
-  /// using the specified [encoding] (defaults to UTF-8).
-  /// Corresponds to deserializing a `String` in Rust.
-  /// Advances position by 8 (for length) + length bytes.
-  /// Internal reads respect the `unsafe` flag.
-  ///
-  /// Warning: Always check if other encodings are supported besides Dart <-> Dart coding
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct User { username: String }
-  /// ```
-  @override
-  String readString([StringEncoding encoding = StringEncoding.utf8]) {
-    final length = readU64();
-    return readFixedString(length, encoding: encoding);
-  }
-
-  /// Reads a fixed-length string of [length] bytes from the buffer.
-  ///
-  /// Reads exactly [length] bytes and decodes them using the specified [encoding] (defaults to UTF-8).
-  /// Use when the exact byte length of the string data is known beforehand.
-  /// Corresponds to deserializing fixed-size byte arrays (`[u8; N]`) intended as string data in Rust.
-  /// Advances position by [length] bytes.
-  /// If `unsafe` is false, throws [BincodeReadException] if not enough data remains or decoding fails.
-  /// If `unsafe` is true, skips checks; reading past bounds throws [RangeError].
-  ///
-  /// Warning: Always check if other encodings are supported besides Dart <-> Dart coding
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct LegacyRecord {
-  ///     name_fixed: [u8; 32],
-  /// }
-  /// // Read with readFixedString(32)
-  /// ```
-  @override
-  String readFixedString(int length,
-      {StringEncoding encoding = StringEncoding.utf8}) {
-    return unsafe
-        ? _wrapper.readString(length, encoding: encoding)
-        : _readOrThrow(() => _wrapper.readString(length, encoding: encoding),
-            "fixed string of length $length");
-  }
-
-  /// Reads a fixed-length string (like [readFixedString]) and removes trailing null (`\x00`) characters.
-  ///
-  /// Advances position by [length] bytes.
-  /// Internal calls respect the `unsafe` flag.
-  ///
-  /// Warning: Always check if other encodings are supported besides Dart <-> Dart coding
-  @override
-  String readCleanFixedString(int length,
-      {StringEncoding encoding = StringEncoding.utf8}) {
-    final rawString = readFixedString(length, encoding: encoding);
-    return rawString.replaceAll('\x00', '');
-  }
-
-  // -----------------------------
-  // Optionals
-  // -----------------------------
-
-  /// Reads an optional boolean value according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the boolean value.
-  /// Corresponds to deserializing `Option<bool>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Flags { is_enabled: Option<bool> }
-  /// ```
-  @override
-  bool? readOptionBool() => _readOptional<bool>(readBool, readU8);
-
-  /// Reads an optional unsigned 8-bit integer according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the u8 value.
-  /// Corresponds to deserializing `Option<u8>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Config { priority: Option<u8> }
-  /// ```
-  @override
-  int? readOptionU8() => _readOptional<int>(readU8, readU8);
-
-  /// Reads an optional unsigned 16-bit integer according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the u16 value.
-  /// Corresponds to deserializing `Option<u16>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Item { item_id: Option<u16> }
-  /// ```
-  @override
-  int? readOptionU16() => _readOptional<int>(readU16, readU8);
-
-  /// Reads an optional unsigned 32-bit integer according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the u32 value.
-  /// Corresponds to deserializing `Option<u32>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Message { sequence_num: Option<u32> }
-  /// ```
-  @override
-  int? readOptionU32() => _readOptional<int>(readU32, readU8);
-
-  /// Reads an optional unsigned 64-bit integer according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the u64 value.
-  /// Corresponds to deserializing `Option<u64>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Timestamps { last_updated_ns: Option<u64> }
-  /// ```
-  @override
-  int? readOptionU64() => _readOptional<int>(readU64, readU8);
-
-  /// Reads an optional signed 8-bit integer according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the i8 value.
-  /// Corresponds to deserializing `Option<i8>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Adjustment { delta: Option<i8> }
-  /// ```
-  @override
-  int? readOptionI8() => _readOptional<int>(readI8, readU8);
-
-  /// Reads an optional signed 16-bit integer according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the i16 value.
-  /// Corresponds to deserializing `Option<i16>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Point { z_coord: Option<i16> }
-  /// ```
-  @override
-  int? readOptionI16() => _readOptional<int>(readI16, readU8);
-
-  /// Reads an optional signed 32-bit integer according to Bincode's O`Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the i32 value.
-  /// Corresponds to deserializing `Option<i32>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Event { event_code: Option<i32> }
-  /// ```
-  @override
-  int? readOptionI32() => _readOptional<int>(readI32, readU8);
-
-  /// Reads an optional signed 64-bit integer according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the i64 value.
-  /// Corresponds to deserializing `Option<i64>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct FileInfo { size_bytes: Option<i64> }
-  /// ```
-  @override
-  int? readOptionI64() => _readOptional<int>(readI64, readU8);
-
-  /// Reads an optional 32-bit float according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the f32 value.
-  /// Corresponds to deserializing `Option<f32>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Measurement { temperature: Option<f32> }
-  /// ```
-  @override
-  double? readOptionF32() => _readOptional<double>(readF32, readU8);
-
-  /// Reads an optional 64-bit float according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the f64 value.
-  /// Corresponds to deserializing `Option<f64>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Coordinates { longitude: Option<f64> }
-  /// ```
-  @override
-  double? readOptionF64() => _readOptional<double>(readF64, readU8);
-
-  /// Reads an optional string according to Bincode's `Option<T>` encoding.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the string
-  /// (including its U64 length prefix) using [readString]. Uses the specified [encoding].
-  /// Corresponds to deserializing `Option<String>` in Rust.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// Warning: Always check if other encodings are supported besides Dart <-> Dart coding
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct UserProfile { nickname: Option<String> }
-  /// ```
-  @override
-  String? readOptionString([StringEncoding encoding = StringEncoding.utf8]) =>
-      _readOptional<String>(() => readString(encoding), readU8);
-
-  /// Reads an optional fixed-length string representation from the buffer.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads exactly [length] bytes
-  /// and decodes them as a string using [readFixedString] with the given [encoding].
-  /// Useful if the source data contains optional strings stored in fixed-size buffers.
-  /// Internal reads respect the `unsafe` flag. Throws if tag is invalid.
-  ///
-  /// Warning: Always check if other encodings are supported besides Dart <-> Dart coding
-  ///
-  /// #### Rust Context Example (Conceptual):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct LegacyRecord {
-  ///     // Optional tag stored in fixed 8 bytes
-  ///     optional_tag: Option<[u8; 8]>,
-  /// }
-  /// // Read with readOptionFixedString(8)
-  /// ```
-  @override
-  String? readOptionFixedString(int length,
-          {StringEncoding encoding = StringEncoding.utf8}) =>
-      _readOptional<String>(
-          () => readFixedString(length, encoding: encoding), readU8);
-
-  /// Reads an optional fixed-length string and removes trailing null characters (`\x00`).
-  ///
-  /// Combines [readOptionFixedString] with null character removal.
-  /// Internal reads respect the `unsafe` flag.
-  ///
-  /// Warning: Always check if other encodings are supported besides Dart <-> Dart coding
-  @override
-  String? readCleanOptionFixedString(int length,
-      {StringEncoding encoding = StringEncoding.utf8}) {
-    // readOptionFixedString handles safe/unsafe logic internally via _readOptional
-    final rawString = readOptionFixedString(length, encoding: encoding);
-    // Removing null chars is safe
-    return rawString?.replaceAll('\x00', '');
-  }
-
-  /// Reads an optional 3-element [Float32List] corresponding to `Option<[f32; 3]>`.
-  ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some).
-  /// If Some (tag == 1), reads three `f32` values and returns them in a [Float32List].
-  /// If None (tag == 0), returns null.
-  /// Throws [InvalidOptionTagException] if tag is not 0 or 1.
-  /// Internal reads respect the `unsafe` flag.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Transform {
-  ///     scale: Option<[f32; 3]>,
+  /// struct Record {
+  ///     id: Option<u32>,
   /// }
   /// ```
-  /// **Layout:** `[0]` if `null`, `[1][f32][f32][f32]` otherwise.
+  ///
+  /// **Layout:** `[0]` if null, `[1][u32 bytes]` if present
   @override
-  Float32List? readOptionF32Triple() {
-    final tag = readU8();
-    if (tag != 0 && tag != 1) {
-      throw InvalidOptionTagException(tag);
-    }
-    if (tag == 1) {
-      // Some
-      final f1 = readF32();
-      final f2 = readF32();
-      final f3 = readF32();
-      return Float32List.fromList([f1, f2, f3]);
-    } else {
-      return null;
-    }
-  }
+  int? readOptionU32() => _readTagged(readU32);
 
-  // -----------------------------
-  // Collections
-  // -----------------------------
+  /// Reads an optional `u64` value from the buffer.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Timestamp {
+  ///     updated_at: Option<u64>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][u64 bytes]` if present
+  @override
+  int? readOptionU64() => _readTagged(readU64);
 
-  /// Reads a list of elements, where the list length is prefixed as a U64.
+  /// Reads an optional signed 8-bit integer (`i8`) from the buffer.
   ///
-  /// First reads the U64 length, then calls the [readElement] callback function
-  /// exactly `length` times to read each element.
-  /// Corresponds to deserializing `Vec<T>` in Rust for any serializable `T`.
-  /// Internal reads (length and elements via callback) respect the `unsafe` flag.
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Delta {
+  ///     offset: Option<i8>,
+  /// }
+  /// ```
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// **Layout:** `[0]` if null, `[1][i8 byte]` if present
+  @override
+  int? readOptionI8() => _readTagged(readI8);
+
+  /// Reads an optional signed 16-bit integer (`i16`) from the buffer.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Point {
+  ///     z: Option<i16>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][i16 bytes]` if present
+  @override
+  int? readOptionI16() => _readTagged(readI16);
+
+  /// Reads an optional signed 32-bit integer (`i32`) from the buffer.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Vec2 {
+  ///     x: Option<i32>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][i32 bytes]` if present
+  @override
+  int? readOptionI32() => _readTagged(readI32);
+
+  /// Reads an optional signed 64-bit integer (`i64`) from the buffer.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Account {
+  ///     balance: Option<i64>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][i64 bytes]` if present
+  @override
+  int? readOptionI64() => _readTagged(readI64);
+
+  /// Reads an optional 32-bit float (`f32`) using IEEE-754 format.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Sensor {
+  ///     temperature: Option<f32>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][f32 bytes]` if present
+  @override
+  double? readOptionF32() => _readTagged(readF32);
+
+  /// Reads an optional 64-bit float (`f64`) using IEEE-754 format.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct DataPoint {
+  ///     value: Option<f64>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][f64 bytes]` if present
+  @override
+  double? readOptionF64() => _readTagged(readF64);
+
+  /// Reads an optional UTF‑8 string with a `u64` length prefix if present.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Message {
+  ///     text: Option<String>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][len: u64][utf8-bytes]` if present
+  @override
+  String? readOptionString() => _readTagged(() => readString());
+
+  /// Reads an optional fixed-length UTF‑8 string of exactly [length] bytes.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Label {
+  ///     name: Option<[u8; 8]>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][fixed-bytes]` if present
+  @override
+  String? readOptionFixedString(int length) =>
+      _readTagged(() => readFixedString(length));
+
+  /// Reads an optional fixed-length UTF‑8 string and strips null padding.
+  ///
+  /// Useful for padded fields like `[u8; 16]` where content may be shorter.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Record {
+  ///     tag: Option<[u8; 16]>,
+  /// }
+  /// ```
+  ///
+  /// **Layout:** `[0]` if null, `[1][fixed-bytes]` with `\x00` stripped
+  @override
+  String? readCleanOptionFixedString(int length) =>
+      _readTagged(() => readFixedString(length).replaceAll('\x00', ''));
+
+  // ── Collections ──────────────────────────────────────────────────────────
+
+  /// Reads a Bincode sequence of elements into a `List<T>`, using the provided [readElement] function.
+  ///
+  /// 1. Reads a `u64` length prefix.
+  /// 2. Calls [readElement] once for each element, appending to the result list.
+  ///
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
   /// struct Scene {
-  ///     objects: Vec<SceneObject>, // Deserializes length, then uses callback logic for each object
+  ///     objects: Vec<SceneObject>,
   /// }
-  /// #[derive(Deserialize)]
-  /// struct SceneObject { /* ... */ }
   /// ```
+  ///
+  /// **Layout:** `[u64 length][element 1 bytes][element 2 bytes]...`
+  ///
+  /// #### Example
+  /// ```dart
+  /// final list = reader.readList(() => reader.readU32());
+  /// ```
+  ///
+  /// **Performance Warning:**
+  /// This method allocates and decodes one element at a time using [readElement].
+  /// It is **computationally expensive** for large sequences due to Dart VM function call overhead and dynamic dispatch.
+  ///
+  /// Consider using specialized numeric list readers (like `readUint32List`) when possible.
   @override
   List<T> readList<T>(T Function() readElement) {
     final length = readU64();
-    return List<T>.generate(length, (_) => readElement());
+    return List<T>.generate(length, (_) => readElement(), growable: false);
   }
 
-  /// Reads a map of key-value pairs, where the number of entries is prefixed as a U64.
+  /// Reads a Bincode-encoded map into a `Map<K, V>`, using provided reader functions for keys and values.
   ///
-  /// First reads the U64 length (number of entries), then calls [readKey] followed by
-  /// [readValue] `length` times to read each key-value pair.
-  /// Corresponds to deserializing map types like `HashMap<K, V>` or `BTreeMap<K, V>` in Rust.
-  /// Internal reads (length and keys/values via callbacks) respect the `unsafe` flag.
+  /// 1. Reads a `u64` length prefix.
+  /// 2. Reads `[key][value]` pairs `length` times using [readKey] and [readValue].
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// #### Rust Context Example:
   /// ```rust
   /// use std::collections::HashMap;
+  ///
   /// #[derive(Deserialize)]
   /// struct GameState {
-  ///     players: HashMap<String, PlayerData>, // Deserializes length, then key/value pairs
+  ///     players: HashMap<u32, Player>,
   /// }
-  /// #[derive(Deserialize)]
-  /// struct PlayerData { /* ... */ }
   /// ```
+  ///
+  /// **Layout:** `[u64 num_entries][key1][val1][key2][val2]...`
+  ///
+  /// #### Example
+  /// ```dart
+  /// final map = reader.readMap(
+  ///   () => reader.readU32(),
+  ///   () => reader.readNestedObjectForFixed(player),
+  /// );
+  /// ```
+  ///
+  /// **Performance Warning:**
+  /// This method is **computationally expensive** for large maps due to repeated function calls.
+  /// Prefer using flat representations with list pairs if you can optimize for size or speed.
   @override
   Map<K, V> readMap<K, V>(K Function() readKey, V Function() readValue) {
     final length = readU64();
     final result = <K, V>{};
-    for (int i = 0; i < length; i++) {
-      final key = readKey();
-      final value = readValue();
-      result[key] = value;
+    for (var i = 0; i < length; i++) {
+      result[readKey()] = readValue();
     }
     return result;
   }
 
-  // -----------------------------
-  // Numeric Lists (Specialized)
-  // -----------------------------
+  // ── Numeric Lists ────────────────────────────────────────────────────────
 
-  /// Reads a Bincode sequence of 32-bit float values from the buffer.
+  /// Reads a `Vec<u8>` as `[u64 length][u8, u8, ...]`.
   ///
-  /// First reads a U64 length prefix, then reads that many f32 elements.
-  /// Corresponds to deserializing `Vec<f32>` in Rust.
-  /// If `unsafe` is false (default), checks ensure enough data remains before reading the length and elements.
-  /// If `unsafe` is true, checks are skipped; reading past buffer bounds will throw a [RangeError].
+  /// Returns a `Uint8List.view` directly over the buffer for maximum efficiency.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// #### Rust Context:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct SignalData { samples_f32: Vec<f32> }
+  /// struct Blob {
+  ///     data: Vec<u8>,
+  /// }
   /// ```
-  /// Returns a `List<double>` containing the read elements.
-  /// Throws [BincodeReadException] (via _readOrThrow) if not enough data and `unsafe` is false.
+  ///
+  /// #### Example:
+  /// ```dart
+  /// final bytes = reader.readUint8List();
+  /// ```
+  ///
+  /// **Layout:** `[u64 length][u8 * length]`
+  ///
+  /// This method is always zero-copy and alignment-safe.
   @override
-  List<double> readFloat32List() {
+  @pragma('vm:prefer-inline')
+  Uint8List readUint8List() {
     final length = readU64();
-    if (length < 0 || length > 0x1FFFFFFFFFFFFF) {
-      throw BincodeException("Invalid list length read: $length");
-    }
-    return unsafe
-        ? _wrapper.readFloat32List(length) // Use read length
-        : _readOrThrow(
-            () => _wrapper.readFloat32List(length), // Use read length
-            "Float32 list of calculated length $length"); // Use read length
+    _check(length);
+    final p = _pos;
+    _pos = p + length;
+    return Uint8List.view(
+      _bytes.buffer,
+      _bytes.offsetInBytes + p,
+      length,
+    );
   }
 
-  /// Reads a Bincode sequence of 64-bit float values from the buffer.
+  /// Reads a `Vec<i8>` as `[u64 length][i8, i8, ...]`.
   ///
-  /// First reads a U64 length prefix, then reads that many f64 elements.
-  /// Corresponds to deserializing `Vec<f64>` in Rust.
-  /// Handles `unsafe` flag for bounds checks (throws `RangeError` if unsafe and out of bounds).
+  /// Returns a `Int8List.view` over the buffer directly.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// #### Rust Context:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct GraphPoints { y_values: Vec<f64> }
+  /// struct Audio {
+  ///     samples: Vec<i8>,
+  /// }
   /// ```
-  /// Throws [BincodeReadException] if not enough data and `unsafe` is false.
+  ///
+  /// **Layout:** `[u64 length][i8 * length]`
+  ///
+  /// This method is always zero-copy and alignment-safe.
   @override
-  List<double> readFloat64List() {
+  @pragma('vm:prefer-inline')
+  Int8List readInt8List() {
     final length = readU64();
-    if (length < 0 || length > 0x1FFFFFFFFFFFFF) {
-      throw BincodeException("Invalid list length read: $length");
-    }
-    return unsafe
-        ? _wrapper.readFloat64List(length)
-        : _readOrThrow(() => _wrapper.readFloat64List(length),
-            "Float64 list of calculated length $length");
+    _check(length);
+    final p = _pos;
+    _pos = p + length;
+    return Int8List.view(
+      _bytes.buffer,
+      _bytes.offsetInBytes + p,
+      length,
+    );
   }
 
-  /// Reads a Bincode sequence of signed 8-bit integers from the buffer.
+  /// Reads a Rust `Vec<u16>` as `[u64 length][u16, u16, ...]` (little-endian).
   ///
-  /// First reads a U64 length prefix, then reads that many i8 elements.
-  /// Corresponds to deserializing `Vec<i8>` in Rust.
-  /// Handles `unsafe` flag for bounds checks (throws `RangeError` if unsafe and out of bounds).
+  /// Attempts to return a `Uint16List.view`.
+  /// Falls back to manual per-element reads if the buffer is not 2-byte aligned.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// **Performance Warning:**
+  /// Fallback reduces performance. Use `reader.isAligned(2)` to check alignment before calling.
+  ///
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct AudioSample { pcm_data_i8: Vec<i8> }
+  /// struct Sample { values: Vec<u16> }
   /// ```
-  /// Throws [BincodeReadException] if not enough data and `unsafe` is false.
+  ///
+  /// **Layout:** `[u64 length][u16 * length]`
   @override
-  List<int> readInt8List() {
+  @pragma('vm:prefer-inline')
+  Uint16List readUint16List() {
     final length = readU64();
-    if (length < 0 || length > 0x1FFFFFFFFFFFFF) {
-      throw BincodeException("Invalid list length read: $length");
+    final byteCount = length * 2;
+    _check(byteCount);
+    final p = _pos;
+    final offset = _bytes.offsetInBytes + p;
+    _pos = p + byteCount;
+
+    if ((offset & 1) == 0) {
+      return Uint16List.view(
+        _bytes.buffer,
+        offset,
+        length,
+      );
+    } else {
+      final list = Uint16List(length);
+      final data = ByteData.view(
+        _bytes.buffer,
+        offset,
+        byteCount,
+      );
+      for (var i = 0; i < length; i++) {
+        list[i] = data.getUint16(i * 2, Endian.little);
+      }
+      return list;
     }
-    return unsafe
-        ? _wrapper.readInt8List(length)
-        : _readOrThrow(() => _wrapper.readInt8List(length),
-            "Int8 list of calculated length $length");
   }
 
-  /// Reads a Bincode sequence of signed 16-bit integers (Little Endian) from the buffer.
+  /// Reads a Rust `Vec<u32>` as `[u64 length][u32, u32, ...]` (little-endian).
   ///
-  /// First reads a U64 length prefix, then reads that many i16 elements.
-  /// Corresponds to deserializing `Vec<i16>` in Rust.
-  /// Handles `unsafe` flag for bounds checks (throws `RangeError` if unsafe and out of bounds).
+  /// Uses zero-copy `Uint32List.view` if the buffer is 4-byte aligned.
+  /// Otherwise falls back to slower per-element decoding using `readU32()`.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// **Performance Warning:**
+  /// Use `reader.isAligned(4)` to avoid fallback and preserve performance.
+  ///
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct PointCloud { coords_i16: Vec<i16> }
+  /// struct Flags { bits: Vec<u32> }
   /// ```
-  /// Throws [BincodeReadException] if not enough data and `unsafe` is false.
+  ///
+  /// **Layout:** `[u64 length][u32 * length]`
   @override
-  List<int> readInt16List() {
-    final length = readU64();
-    if (length < 0 || length > 0x1FFFFFFFFFFFFF) {
-      throw BincodeException("Invalid list length read: $length");
-    }
-    return unsafe
-        ? _wrapper.readInt16List(length)
-        : _readOrThrow(() => _wrapper.readInt16List(length),
-            "Int16 list of calculated length $length");
-  }
-
-  /// Reads a Bincode sequence of signed 32-bit integers (Little Endian) from the buffer.
-  ///
-  /// First reads a U64 length prefix, then reads that many i32 elements.
-  /// Corresponds to deserializing `Vec<i32>` in Rust.
-  /// Handles `unsafe` flag for bounds checks (throws `RangeError` if unsafe and out of bounds).
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct IdList { user_ids: Vec<i32> }
-  /// ```
-  /// Throws [BincodeReadException] if not enough data and `unsafe` is false.
-  @override
-  List<int> readInt32List() {
-    final length = readU64();
-    if (length < 0 || length > 0x1FFFFFFFFFFFFF) {
-      throw BincodeException("Invalid list length read: $length");
-    }
-    return unsafe
-        ? _wrapper.readInt32List(length)
-        : _readOrThrow(() => _wrapper.readInt32List(length),
-            "Int32 list of calculated length $length");
-  }
-
-  /// Reads a Bincode sequence of signed 64-bit integers (Little Endian) from the buffer.
-  ///
-  /// First reads a U64 length prefix, then reads that many i64 elements.
-  /// Corresponds to deserializing `Vec<i64>` in Rust.
-  /// Handles `unsafe` flag for bounds checks (throws `RangeError` if unsafe and out of bounds).
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct EventLog { timestamps_ms: Vec<i64> }
-  /// ```
-  /// Throws [BincodeReadException] if not enough data and `unsafe` is false.
-  @override
-  List<int> readInt64List() {
-    final length = readU64();
-    if (length < 0 || length > 0x1FFFFFFFFFFFFF) {
-      throw BincodeException("Invalid list length read: $length");
-    }
-    return unsafe
-        ? _wrapper.readInt64List(length)
-        : _readOrThrow(() => _wrapper.readInt64List(length),
-            "Int64 list of calculated length $length");
-  }
-
-  /// Reads a Bincode sequence of unsigned 8-bit integers (bytes) from the buffer.
-  ///
-  /// First reads a U64 length prefix, then reads that many u8 elements.
-  /// Corresponds to deserializing `Vec<u8>` in Rust.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct RawData { buffer: Vec<u8> }
-  /// ```
-  /// Throws [BincodeReadException] if not enough data and `unsafe` is false.
-  @override
-  List<int> readUint8List() {
-    final length = readU64();
-    if (length < 0 || length > 0x1FFFFFFFFFFFFF) {
-      throw BincodeException("Invalid list length read: $length");
-    }
-    return unsafe
-        ? _wrapper.readUint8List(length)
-        : _readOrThrow(() => _wrapper.readUint8List(length),
-            "Uint8 list of calculated length $length");
-  }
-
-  /// Reads a Bincode sequence of unsigned 16-bit integers (Little Endian) from the buffer.
-  ///
-  /// First reads a U64 length prefix, then reads that many u16 elements.
-  /// Corresponds to deserializing `Vec<u16>` in Rust.
-  /// Handles `unsafe` flag for bounds checks (throws `RangeError` if unsafe and out of bounds).
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct CharCodes { utf16_codes: Vec<u16> }
-  /// ```
-  /// Throws [BincodeReadException] if not enough data and `unsafe` is false.
-  @override
-  List<int> readUint16List() {
-    final length = readU64();
-    if (length < 0 || length > 0x1FFFFFFFFFFFFF) {
-      throw BincodeException("Invalid list length read: $length");
-    }
-    return unsafe
-        ? _wrapper.readUint16List(length)
-        : _readOrThrow(() => _wrapper.readUint16List(length),
-            "Uint16 list of calculated length $length");
-  }
-
-  /// Reads a Bincode sequence of unsigned 32-bit integers (Little Endian) from the buffer.
-  ///
-  /// First reads a U64 length prefix, then reads that many u32 elements.
-  /// Corresponds to deserializing `Vec<u32>` in Rust.
-  /// Handles `unsafe` flag for bounds checks (throws `RangeError` if unsafe and out of bounds).
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct ColorPalette { rgba_colors: Vec<u32> }
-  /// ```
-  /// Throws [BincodeReadException] if not enough data and `unsafe` is false.
-  @override
+  @pragma('vm:prefer-inline')
   List<int> readUint32List() {
     final length = readU64();
-    if (length < 0 || length > 0x1FFFFFFFFFFFFF) {
-      throw BincodeException("Invalid list length read: $length");
+    final byteCount = length * 4;
+    _check(byteCount);
+    final p = _pos;
+    final offsetBytes = _bytes.offsetInBytes + p;
+
+    if ((offsetBytes & 3) == 0) {
+      _pos = p + byteCount;
+      return Uint32List.view(
+        _bytes.buffer,
+        offsetBytes,
+        length,
+      );
+    } else {
+      return List<int>.generate(
+        length,
+        (_) => readU32(),
+        growable: false,
+      );
     }
-    return unsafe
-        ? _wrapper.readUint32List(length)
-        : _readOrThrow(() => _wrapper.readUint32List(length),
-            "Uint32 list of calculated length $length");
   }
 
-  /// Reads a Bincode sequence of unsigned 64-bit integers (Little Endian) from the buffer.
+  /// Reads a Rust `Vec<f32>` as `[u64 length][f32, f32, ...]` (little-endian).
   ///
-  /// First reads a U64 length prefix, then reads that many u64 elements.
-  /// Corresponds to deserializing `Vec<u64>` in Rust.
-  /// Handles `unsafe` flag for bounds checks (throws `RangeError` if unsafe and out of bounds).
+  /// Uses `Float32List.view` if buffer is 4-byte aligned.
+  /// Falls back to `readF32()` per element on unaligned memory.
   ///
-  /// #### Rust Context Example (Deserialization):
+  /// **Performance Warning:**
+  /// Use `reader.isAligned(4)` to prevent performance degradation from fallback mode.
+  ///
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct IdentifierList { unique_ids: Vec<u64> }
+  /// struct Curve { points: Vec<f32> }
   /// ```
-  /// Throws [BincodeReadException] if not enough data and `unsafe` is false.
+  ///
+  /// **Layout:** `[u64 length][f32 * length]`
+
   @override
+  @pragma('vm:prefer-inline')
+  List<double> readFloat32List() {
+    final length = readU64();
+    final byteCount = length * 4;
+    _check(byteCount);
+    final p = _pos;
+    final offset = _bytes.offsetInBytes + p;
+
+    if ((offset & 3) == 0) {
+      _pos = p + byteCount;
+      return Float32List.view(
+        _bytes.buffer,
+        offset,
+        length,
+      );
+    } else {
+      return List<double>.generate(
+        length,
+        (_) => readF32(),
+        growable: false,
+      );
+    }
+  }
+
+  /// Reads a Rust `Vec<f64>` as `[u64 length][f64, f64, ...]` (little-endian).
+  ///
+  /// Uses `Float64List.view` on 8-byte aligned buffers.
+  /// If unaligned, falls back to calling `readF64()` repeatedly.
+  ///
+  /// **Performance Warning:**
+  /// Fallback is costly. Use `reader.isAligned(8)` in critical code paths.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Measurements { values: Vec<f64> }
+  /// ```
+  ///
+  /// **Layout:** `[u64 length][f64 * length]`
+
+  @override
+  @pragma('vm:prefer-inline')
+  List<double> readFloat64List() {
+    final length = readU64();
+    final byteCount = length * 8;
+    _check(byteCount);
+    final p = _pos;
+    final offsetBytes = _bytes.offsetInBytes + p;
+
+    if ((offsetBytes & 7) == 0) {
+      _pos = p + byteCount;
+      return Float64List.view(
+        _bytes.buffer,
+        offsetBytes,
+        length,
+      );
+    } else {
+      return List<double>.generate(
+        length,
+        (_) => readF64(),
+        growable: false,
+      );
+    }
+  }
+
+  /// Reads a Rust `Vec<i16>` as `[u64 length][i16, i16, ...]` (little-endian).
+  ///
+  /// Uses `Int16List.view` if the buffer is 2-byte aligned.
+  /// Falls back to element-by-element decoding on unaligned data.
+  ///
+  /// **Performance Warning:**
+  /// Fallback reduces performance. Use `reader.isAligned(2)` before reading.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct PCM { data: Vec<i16> }
+  /// ```
+  ///
+  /// **Layout:** `[u64 length][i16 * length]`
+  @override
+  @pragma('vm:prefer-inline')
+  List<int> readInt16List() {
+    final length = readU64();
+    final byteCount = length * 2;
+    _check(byteCount);
+    final p = _pos;
+    final offset = _bytes.offsetInBytes + p;
+
+    if ((offset & 1) == 0) {
+      _pos = p + byteCount;
+      return Int16List.view(
+        _bytes.buffer,
+        offset,
+        length,
+      );
+    } else {
+      return List<int>.generate(
+        length,
+        (_) => readI16(),
+        growable: false,
+      );
+    }
+  }
+
+  /// Reads a Rust `Vec<i32>` as `[u64 length][i32, i32, ...]` (little-endian).
+  ///
+  /// Zero-copy if the buffer is 4-byte aligned.
+  /// Fallback occurs if alignment is off, falling back to `readI32()` per element.
+  ///
+  /// **Performance Warning:**
+  /// Use `reader.isAligned(4)` to check alignment and avoid fallback mode.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Signal { deltas: Vec<i32> }
+  /// ```
+  ///
+  /// **Layout:** `[u64 length][i32 * length]`
+  @override
+  @pragma('vm:prefer-inline')
+  List<int> readInt32List() {
+    final length = readU64();
+    final byteCount = length * 4;
+    _check(byteCount);
+    final p = _pos;
+    final offsetBytes = _bytes.offsetInBytes + p;
+
+    if ((offsetBytes & 3) == 0) {
+      _pos = p + byteCount;
+      return Int32List.view(
+        _bytes.buffer,
+        offsetBytes,
+        length,
+      );
+    } else {
+      return List<int>.generate(
+        length,
+        (_) => readI32(),
+        growable: false,
+      );
+    }
+  }
+
+  /// Reads a Rust `Vec<i64>` as `[u64 length][i64, i64, ...]` (little-endian).
+  ///
+  /// Uses `Int64List.view` on 8-byte aligned buffers.
+  /// Falls back to slower `readI64()` if unaligned.
+  ///
+  /// **Performance Warning:**
+  /// Use `reader.isAligned(8)` to avoid the fallback path.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Timeline { timestamps: Vec<i64> }
+  /// ```
+  ///
+  /// **Layout:** `[u64 length][i64 * length]`
+
+  @override
+  @pragma('vm:prefer-inline')
+  List<int> readInt64List() {
+    final length = readU64();
+    final byteCount = length * 4;
+    _check(byteCount);
+    final p = _pos;
+    final offsetBytes = _bytes.offsetInBytes + p;
+
+    if ((offsetBytes & 7) == 0) {
+      _pos = p + byteCount;
+      return Int64List.view(
+        _bytes.buffer,
+        offsetBytes,
+        length,
+      );
+    } else {
+      return List<int>.generate(
+        length,
+        (_) => readI64(),
+        growable: false,
+      );
+    }
+  }
+
+  /// Reads a Rust `Vec<u64>` as `[u64 length][u64, u64, ...]` (little-endian).
+  ///
+  /// Returns a `Uint64List.view` when 8-byte alignment is satisfied.
+  /// Falls back to calling `readU64()` per element otherwise.
+  ///
+  /// **Performance Warning:**
+  /// Fallback is slower. Use `reader.isAligned(8)` before calling for performance-sensitive code.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct BigInts { values: Vec<u64> }
+  /// ```
+  ///
+  /// **Layout:** `[u64 length][u64 * length]`
+
+  @override
+  @pragma('vm:prefer-inline')
   List<int> readUint64List() {
     final length = readU64();
-    if (length < 0 || length > 0x1FFFFFFFFFFFFF) {
-      throw BincodeException("Invalid list length read: $length");
+    final byteCount = length * 4;
+    _check(byteCount);
+    final p = _pos;
+    final offsetBytes = _bytes.offsetInBytes + p;
+
+    if ((offsetBytes & 7) == 0) {
+      _pos = p + byteCount;
+      return Uint64List.view(
+        _bytes.buffer,
+        offsetBytes,
+        length,
+      );
+    } else {
+      return List<int>.generate(
+        length,
+        (_) => readU64(),
+        growable: false,
+      );
     }
-    return unsafe
-        ? _wrapper.readUint64List(length)
-        : _readOrThrow(() => _wrapper.readUint64List(length),
-            "Uint64 list of calculated length $length");
   }
 
-  /// Returns a [Uint8List] view of the entire underlying byte buffer used by the reader.
-  ///
-  /// This provides access to the complete raw data the reader was initialized with,
-  /// regardless of the current read position. Modifying the returned list view
-  /// **will modify** the reader's underlying buffer.
   @override
-  Uint8List toBytes() => _wrapper.buffer.asUint8List();
+  Uint8List toBytes() => _bytes.buffer.asUint8List();
 
-  // -----------------------------
-  // Nested Objects
-  // -----------------------------
+  // ── Nested Objects ───────────────────────────────────────────────────────
 
-  /// **Deprecated:** Use [readNestedObjectForCollection] or [readNestedObjectForFixed].
-  /// Reads a nested object that was encoded with a length prefix.
+  /// Reads a nested object from a Rust collection-style layout: `[u64 length][...payload bytes]`.
   ///
-  /// Reads a U64 length, reads that many bytes, then populates the provided [instance]
-  /// using its `fromBincode` method.
-  @Deprecated(
-      'Use readNestedObjectForCollection or readNestedObjectForFixed instead')
-  @override
-  T readNestedObject<T extends BincodeDecodable>(T instance) {
-    final length = readU64();
-    final bytes = Uint8List.fromList(readBytes(length));
-    instance.fromBincode(bytes);
-    return instance;
-  }
-
-  /// **Deprecated:** Use [readOptionNestedObjectForCollection] or [readOptionNestedObjectForFixed].
-  /// Reads an optional nested object encoded with a length prefix when Some.
+  /// Internally:
+  /// - Reads the payload length using `readU64()`.
+  /// - Extracts a sub-slice of the buffer from the current position.
+  /// — Constructs a new temporary `BincodeReader` for the slice.
+  /// - Passes it to the given [instance]'s `decode()` method.
   ///
-  /// Reads a 1-byte flag. If 1 (Some), reads U64 length, reads bytes, creates an
-  /// instance using [creator], and calls `fromBincode`. Returns null if flag is 0 (None).
-  @Deprecated(
-      'Use readOptionNestedObjectForCollection or readOptionNestedObjectForFixed instead')
-  @override
-  T? readOptionNestedObject<T extends BincodeDecodable>(T Function() creator) {
-    final tag = readU8();
-    if (tag == 0) return null;
-    if (tag != 1) throw InvalidOptionTagException(tag);
-    final length = readU64();
-    final bytes = Uint8List.fromList(readBytes(length));
-    final instance = creator();
-    instance.fromBincode(bytes);
-    return instance;
-  }
-
-  /// Reads and decodes a nested object that was encoded with a U64 length prefix.
+  /// Used when decoding objects that are wrapped in `Vec<T>` or other length-prefixed containers.
   ///
-  /// Reads the U64 length, reads that many bytes, then populates the fields of
-  /// the provided [instance] using its `fromBincode` method. Returns the
-  /// populated [instance].
-  /// Use this when reading elements of a list/Vec where each element *was*
-  /// individually length-prefixed (e.g., written using [writeNestedValueForCollection]
-  /// within a `writeList` callback).
-  /// Requires `T` to implement [BincodeDecodable].
-  /// Internal reads respect the `unsafe` flag.
-  ///
-  /// #### Rust Context Example (Deserialization):
-  /// Corresponds to reading each `MyItem` element when deserializing `Vec<MyItem>`
-  /// where `MyItem` serialization itself isn't fixed-size or requires explicit length.
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct Container { items: Vec<MyItem> } // MyItem written with per-item length
-  /// #[derive(Deserialize)]
-  /// struct MyItem { id: u32, name: String }
+  /// struct Wrapper { inner: Vec<MyStruct> }
   /// ```
-  /// #### Dart Usage Example:
-  /// Typically used within a `readList` callback when elements have length prefixes:
+  ///
+  /// #### Dart Example:
   /// ```dart
-  /// class MyItem implements BincodeDecodable {
-  ///   int id = 0; String name = '';
-  ///   @override void fromBincode(Uint8List bytes) { /* ... decode id, name */ }
-  /// }
-  /// // BincodeReader reader;
-  /// List<MyItem> items = reader.readList<MyItem>(() {
-  ///   final item = MyItem(); // Create instance
-  ///   // Read item data (which includes its own length prefix)
-  ///   reader.readNestedObjectForCollection<MyItem>(item);
-  ///   return item;
-  /// });
+  /// final user = reader.readNestedObjectForCollection(User());
   /// ```
+  ///
+  /// **Layout:** `[u64 length][nested bytes]`
+  ///
+  /// **Performance Tip:**
+  /// This method allocates a sub-reader and a `Uint8List.view`, but avoids copying.
   @override
   T readNestedObjectForCollection<T extends BincodeDecodable>(T instance) {
     final length = readU64();
-    final bytes = readRawBytes(length);
-    instance.fromBincode(bytes);
+    _check(length);
+    final slice = Uint8List.sublistView(_bytes, _pos, _pos + length);
+    _pos += length;
+    final sub = BincodeReader(slice);
+    instance.decode(sub);
     return instance;
   }
 
-  /// Reads and decodes a nested object that was encoded *without* a length prefix.
+  /// Reads a fixed-size nested object, assuming its byte size can be calculated ahead of time.
   ///
-  /// Use this for reading nested values corresponding to fixed-size Rust struct fields
-  /// OR for reading elements within a list where each element has the *same known fixed size*
-  /// and was written without individual length prefixes (like your `LayoutConfig` example).
-  /// **Requires `T` to implement `BincodeCodable` (both encode and decode)**
-  /// to automatically determine the expected fixed byte size via `instance.toBincode().length`.
-  /// Reads exactly that many bytes and populates the provided [instance] via `fromBincode`.
-  /// Returns the populated [instance].
-  /// Internal read respects the `unsafe` flag. Throws if size cannot be determined or read fails.
+  /// Internally:
+  /// - Uses a temporary writer to measure the fixed encoded size via `_measureFixedSize()`.
+  /// - Reads an exact number of bytes from the buffer (no length prefix).
+  /// - Constructs a temporary `BincodeReader` over that slice and decodes [instance].
   ///
-  /// #### Rust Context Examples (Deserialization):
-  /// 1. Reading a fixed-size struct field:
+  /// This method is for Rust structs where the size is known deterministically (no collections or strings).
+  ///
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct Outer { id: u32, inner: InnerStruct } // Reading 'inner'
-  /// #[derive(Deserialize, Serialize)] // Requires Serialize for size check
-  /// struct InnerStruct { value: f64 }
+  /// struct Vec3 { x: f32, y: f32, z: f32 } // Fixed 12 bytes
   /// ```
-  /// 2. Reading elements of `Vec<FixedStruct>` (where only list length was written):
-  /// ```rust
-  /// #[derive(Deserialize)]
-  /// struct Layout { configs: Vec<LayoutConfig> } // Reading each 'LayoutConfig'
-  /// #[derive(Deserialize, Serialize)] // Requires Serialize for size check
-  /// struct LayoutConfig { x: f32, y: f32, width: f32 } // Fixed size
-  /// ```
-  /// #### Dart Usage Examples:
-  /// 1. Reading a single fixed-size field:
+  ///
+  /// #### Dart Example:
   /// ```dart
-  /// class InnerStruct implements BincodeCodable { /* ... fixed size ... */ }
-  /// // BincodeReader reader;
-  /// final inner = InnerStruct();
-  /// reader.readNestedObjectForFixed<InnerStruct>(inner); // Populate single instance
-  /// print(inner);
+  /// final vec = reader.readNestedObjectForFixed(Vec3());
   /// ```
-  /// 2. Reading elements of a list containing fixed-size items:
-  /// ```dart
-  /// class LayoutConfig implements BincodeCodable { /* ... fixed size ... */ }
-  /// // BincodeReader reader;
-  /// // Corresponds to writer using writeList<LC>(..., (c)=>writeNestedValueForFixed(c))
-  /// List<LayoutConfig> configs = reader.readList<LayoutConfig>(() {
-  ///   final config = LayoutConfig(); // Create instance
-  ///   // Read fixed-size bytes for one element (no per-element length read)
-  ///   reader.readNestedObjectForFixed<LayoutConfig>(config);
-  ///   return config;
-  /// });
-  /// print(configs);
-  /// ```
+  ///
+  /// **Layout:** `[fixed bytes]`
+  ///
+  /// **Performance Warning:**
+  /// Calls `encode()` on the instance just to measure size. Avoid in tight loops if performance is critical.
   @override
   T readNestedObjectForFixed<T extends BincodeCodable>(T instance) {
-    int bytesToRead;
-    try {
-      bytesToRead = instance.toBincode().length;
-    } catch (e) {
-      throw BincodeException(
-          "Cannot determine fixed size for nested object type ${T.runtimeType}. Ensure it implements BincodeCodable.",
-          e);
-    }
-    if (bytesToRead < 0) {
-      throw BincodeException(
-          "Calculated negative size for fixed nested object type ${T.runtimeType}.");
-    }
-    final bytes = readRawBytes(bytesToRead);
-    instance.fromBincode(bytes);
+    final toRead = measureFixedSize(instance);
+    _check(toRead);
+    final slice = Uint8List.sublistView(_bytes, _pos, _pos + toRead);
+    _pos += toRead;
+    final sub = BincodeReader(slice);
+    instance.decode(sub);
     return instance;
   }
 
-  /// Reads an optional nested object that was encoded with a U64 length prefix when Some.
+  /// Reads an optional nested object encoded with a tag + length-prefixed payload.
+  /// Layout: `[u8 tag][u64 length][...payload]`
   ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, reads the U64 length,
-  /// reads that many bytes, creates a new object using the [creator] function,
-  /// populates it via `fromBincode`, and returns it. Returns `null` if the flag was 0.
-  /// Use for optional fields corresponding to Rust `Option<T>` where `T` itself is treated
-  /// as dynamically sized during encoding (e.g., `Option<String>`, `Option<Vec<CustomStruct>>`).
-  /// Requires `T` to implement [BincodeDecodable].
-  /// Internal reads respect the `unsafe` flag. Throws [InvalidOptionTagException] if tag invalid.
+  /// - If [tag] is `0`, returns `null`.
+  /// - If [tag] is `1`, reads the next `u64` bytes and decodes it as a nested object.
+  /// - Throws [InvalidOptionTagException] if tag is not `0` or `1`.
   ///
-  /// #### Rust Context Example (Deserialization):
-  /// Corresponds to reading the `maybe_dynamic_item` field:
+  /// Uses a fresh `BincodeReader` over the slice for decoding.
+  /// The [creator] function is called *only* if the option is present.
+  ///
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct Container { maybe_dynamic_item: Option<MyItem> } // Where MyItem isn't encoded as fixed-size
-  /// #[derive(Deserialize)]
-  /// struct MyItem { /* ... */ }
+  /// struct Item { child: Option<MyStruct> }
   /// ```
-  /// #### Dart Usage Example:
+  ///
+  /// #### Dart Example:
   /// ```dart
-  /// class MyItem implements BincodeDecodable { /* ... */ @override void fromBincode(Uint8List bytes) {} }
-  /// // BincodeReader reader;
-  /// MyItem? maybeItemData = reader.readOptionNestedObjectForCollection<MyItem>(
-  ///   () => MyItem() // Provide function to create a new MyItem instance
-  /// );
-  /// if (maybeItemData != null) { /* use it */ }
+  /// final item = reader.readOptionNestedObjectForCollection(() => Item());
   /// ```
+  ///
+  /// **Performance Tip:**
+  /// Allocates a sub-slice and reader, but avoids deep allocation.
+  /// Use only with collection-style nested encoding.
   @override
   T? readOptionNestedObjectForCollection<T extends BincodeDecodable>(
       T Function() creator) {
     final tag = readU8();
     if (tag == 0) return null;
-    if (!unsafe) {
-      if (tag != 1) {
-        throw InvalidOptionTagException(tag);
-      }
-    }
-
+    if (tag != 1) throw InvalidOptionTagException(tag);
     final length = readU64();
-    final bytes = readRawBytes(length);
-    final instance = creator();
-    instance.fromBincode(bytes);
-    return instance;
+    _check(length);
+    final slice = Uint8List.sublistView(_bytes, _pos, _pos + length);
+    _pos += length;
+    final inst = creator();
+    final sub = BincodeReader(slice);
+    inst.decode(sub);
+    return inst;
   }
 
-  /// Reads an optional nested object that was encoded *without* a length prefix when Some.
+  /// Reads an optional fixed-size nested object encoded with a tag only (no length).
+  /// Layout: `[u8 tag][fixed object bytes]`
   ///
-  /// Reads a 1-byte flag (0 for None, 1 for Some). If Some, determines the object's
-  /// fixed size (requires `T` implements `BincodeCodable` via the instance returned by [creator]),
-  /// reads that many bytes, creates a *new* object using [creator], populates it via `fromBincode`,
-  /// and returns it. Returns `null` if the flag was 0.
-  /// Use for optional fields corresponding to Rust `Option<T>` where `T` is a fixed-size struct.
-  /// Internal read respects the `unsafe` flag. Throws [InvalidOptionTagException] or errors during size calculation/read.
+  /// - If [tag] is `0`, returns `null`.
+  /// - If [tag] is `1`, reads a fixed-size slice and decodes it with a fresh reader.
+  /// - The [creator] function must return a default instance used to calculate size.
   ///
-  /// #### Rust Context Example (Deserialization):
-  /// Corresponds to reading the `optional_settings` field:
+  /// **Size Calculation:**
+  /// Calls `encode()` on a sample instance to determine how many bytes to read.
+  /// This is efficient if the type is simple, but may be costly for complex types.
+  ///
+  /// #### Rust Context Example:
   /// ```rust
   /// #[derive(Deserialize)]
-  /// struct Config { optional_settings: Option<InnerSettings> }
-  /// #[derive(Deserialize, Serialize)] // Requires Serialize for size check
-  /// struct InnerSettings { value: f64 }
+  /// struct Header { optional_id: Option<[u8; 8]> }
   /// ```
-  /// #### Dart Usage Example:
+  ///
+  /// #### Dart Example:
   /// ```dart
-  /// class InnerSettings implements BincodeCodable { /* ... fixed size ... */ }
-  /// // BincodeReader reader;
-  /// InnerSettings? settings = reader.readOptionNestedObjectForFixed<InnerSettings>(
-  ///   () => InnerSettings() // Provide function to create instance
-  /// );
-  /// if (settings != null) { /* use settings */ }
+  /// final header = reader.readOptionNestedObjectForFixed(() => Header());
   /// ```
+  ///
+  /// **Performance Warning:**
+  /// Avoid calling in tight loops for deeply nested types. Pre-measuring size manually is better.
   @override
   T? readOptionNestedObjectForFixed<T extends BincodeCodable>(
       T Function() creator) {
@@ -1206,52 +1773,51 @@ class BincodeReader implements BincodeReaderBuilder {
     if (tag == 0) return null;
     if (tag != 1) throw InvalidOptionTagException(tag);
 
-    T instanceForSize;
-    int bytesToRead;
-    try {
-      instanceForSize = creator();
-      bytesToRead = instanceForSize.toBincode().length;
-    } catch (e) {
-      throw BincodeException(
-          "Cannot determine fixed size for nested object type ${T.runtimeType} from creator. Ensure it implements BincodeCodable.",
-          e);
-    }
-    if (bytesToRead < 0) {
-      throw BincodeException(
-          "Calculated negative size for fixed nested object type ${T.runtimeType}.");
-    }
+    final sample = creator();
+    final toRead = measureFixedSize(sample);
 
-    final bytes = readRawBytes(bytesToRead);
-    final instance = creator();
-    instance.fromBincode(bytes);
-    return instance;
+    _check(toRead);
+    final slice = Uint8List.sublistView(_bytes, _pos, _pos + toRead);
+    _pos += toRead;
+
+    final inst = creator();
+    final sub = BincodeReader(slice);
+    inst.decode(sub);
+    return inst;
   }
 
-  // -----------------------------
-  // Helpers
-  // -----------------------------
-
-  /// Internal helper: Wraps a read operation [readFn] in a try-catch block.
-  T _readOrThrow<T>(T Function() readFn, String description) {
-    assert(!unsafe);
-    try {
-      return readFn();
-    } on RangeError {
-      throw UnexpectedEndOfBufferException();
-    } catch (e) {
-      throw BincodeException("Error reading $description", e);
-    }
-  }
-
-  /// Internal helper for reading optional values based on Bincode's standard
-  /// `Option<T>` encoding (a 1-byte tag followed by the value if the tag is 1).
-  T? _readOptional<T>(T Function() readFn, int Function() readTagFn) {
-    final tag = readTagFn();
-    if (!unsafe) {
-      if (tag != 0 && tag != 1) {
-        throw InvalidOptionTagException(tag);
-      }
-    }
-    return tag == 1 ? readFn() : null;
+  /// Measures the exact number of bytes a fixed-size object would write using `encode()`.
+  ///
+  /// This method is used internally to determine how many bytes to read for a fixed-size struct
+  /// that doesn't include a length prefix (e.g., Rust types with known memory layout).
+  ///
+  /// - Clears the temporary writer.
+  /// - Calls `encode()` on the [instance].
+  /// - Returns the number of bytes written during encoding.
+  ///
+  /// #### Usage Context:
+  /// Used by [readNestedObjectForFixed] and [readOptionNestedObjectForFixed] to calculate
+  /// how many bytes to read from the stream when deserializing fixed-size objects.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Serialize, Deserialize)]
+  /// struct Vec3 { x: f32, y: f32, z: f32 } // Always 12 bytes
+  /// ```
+  ///
+  /// #### Dart Example:
+  /// ```dart
+  /// final reader = BincodeReader(bytes);
+  /// final vec = reader.readNestedObjectForFixed(Vec3());
+  /// ```
+  ///
+  /// **Performance Warning:**
+  /// This method encodes the object just to measure its size.
+  /// Avoid calling frequently in tight loops. If possible, calculate the size once and cache it.
+  @pragma('vm:always-inline')
+  int measureFixedSize<T extends BincodeCodable>(T instance) {
+    _tmpWriter.rewind();
+    instance.encode(_tmpWriter);
+    return _tmpWriter.getBytesWritten();
   }
 }

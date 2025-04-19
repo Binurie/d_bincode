@@ -31,3 +31,23 @@
 ### Removed
 
 * Internal implementation classes (`Builder`, `Wrapper`, `Exception`) from public API.
+
+
+## 3.0.0
+
+### Breaking Changes
+
+* BincodeEncodable & BincodeDecodable use now encode(BincodeReader reader) and decode(BincodeWriter writer) - from and toBincode are removed.
+ 
+### Added
+
+* More static methods for BincodeWriter and BincodeReader
+* Improved performance by alot by removing Wrapper overheat and overall impls of the methods 
+* More methods for BincodeWriter and BincodeReader for manual buffer modifications
+
+### Removed
+
+* ByteDataWrapper removed to increase performance
+* String Encode and Decode Method's and Enums removed - only utf8/ASCII Supported
+* Less Exceptions and checks
+* euc dependency got removed

@@ -1,56 +1,58 @@
-/*
-#######################################################################
-# DISCLAIMER: This benchmark is for illustrative and comparative use. #
-# Results are approximate and depend on runtime conditions such as    #
-# device hardware, Dart VM optimizations, system load, and compiler.  #
-#                                                                     #
-# Do NOT use this as a definitive performance guarantee. Always test  #
-# and profile with your own data and environment for accurate results.#
-#                                                                     #
-# This package can be definitely optiomized much more and this is the # 
-# state as is without any warranty.                                   #
-#######################################################################
-*/
+// Copyright (c) 2025 Binurie
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:d_bincode/d_bincode.dart';
 
-// --- Running Original Bincode Verification ---
 
-// Original Bincode Serialized 531 bytes
+/// Benchmark Performance Disclaimer: The provided benchmark figures reflect
+/// performance under specific, controlled test conditions. Actual results
+/// in deployment may differ substantially due to variations in hardware
+/// specifications, operating system, Dart runtime version, input data
+/// characteristics, concurrency levels, and overall system load. These
+/// benchmarks are intended for comparative insight and do not represent a
+/// performance guarantee for any particular application. Users are advised
+/// to conduct their own benchmarks relevant to their specific operational
+/// context and requirements.
 
-// Original Bincode Verification successful!
+// ======================================
+//  Serialization Benchmark (×5,000,000)
+// ======================================
 
-// =========================================
-// --- Starting Benchmark (Iterations: 500000) ---
+// >>> Bincode
+// Serialize                Total: 6949.34ms   Avg:    1.39µs
+// Deserialize              Total: 8864.11ms   Avg:    1.77µs
+//   Size: 518 bytes
 
-// Benchmarking Bincode...
-// Bincode Total Serialization Time:   1259.624 ms
-// Bincode Average Serialization Time: 2.519 µs
-// Bincode Total Deserialization Time: 1945.186 ms
-// Bincode Average Deserialization Time:3.890 µs
-// Bincode Serialized Size:            531 bytes
-// Bincode Verification:               Successful
-// Bincode Dummy Check:                255
+// >>> JSON
+// Round‑trip               Total: 145482.86ms   Avg:   29.10µs
+//   Size: 1,420 bytes
 
-// Benchmarking JSON...
-// JSON Total Serialization Time:      9128.526 ms
-// JSON Average Serialization Time:    18.257 µs
-// JSON Total Deserialization Time:    6699.181 ms
-// JSON Average Deserialization Time:  13.398 µs
-// JSON Serialized Size:               1420 bytes
-// JSON Verification:                  Successful
-// JSON Dummy Check:                   255
-
-// --- Benchmark Summary (Iterations: 500000) ---
-// Serialization Speed: Bincode is ~7.25x faster (2.52 µs/op vs 18.26 µs/op)
-// Deserialization Speed: Bincode is ~3.44x faster (3.89 µs/op vs 13.40 µs/op)
-// Size Comparison:     Bincode is ~2.67x smaller
-//    Bincode: 531 bytes
-//    JSON:    1420 bytes
-// ------------------------------------------
+// >>> Speedups & Savings
+//   Serialize speedup:     20.93×
+//   Deserialize speedup:   16.41×
+//   Size ratio (JSON/B):   2.74×
+//   Saved bytes:           902 (63.5% smaller)
+// --------------------------------------
 
 class NestedData implements BincodeCodable {
   int nestedId = 0;
@@ -58,21 +60,6 @@ class NestedData implements BincodeCodable {
 
   NestedData();
   NestedData.create(this.nestedId, this.nestedName);
-
-  @override
-  Uint8List toBincode({bool unchecked = false, int initialCapacity = 128}) {
-    final writer = BincodeWriter();
-    writer.writeI32(nestedId);
-    writer.writeString(nestedName);
-    return writer.toBytes();
-  }
-
-  @override
-  void fromBincode(Uint8List bytes, {bool unsafe = false}) {
-    final reader = BincodeReader(bytes, unsafe: unsafe);
-    nestedId = reader.readI32();
-    nestedName = reader.readString();
-  }
 
   Map<String, dynamic> toJson() => {
         'nestedId': nestedId,
@@ -90,6 +77,20 @@ class NestedData implements BincodeCodable {
   String toString() {
     return 'NestedData(id: $nestedId, name: "$nestedName")';
   }
+
+  @override
+  @pragma('vm:prefer-inline')
+  void decode(BincodeReader r) {
+    nestedId = r.readI32();
+    nestedName = r.readString();
+  }
+
+  @override
+  @pragma('vm:prefer-inline')
+  void encode(BincodeWriter w) {
+    w.writeI32(nestedId);
+    w.writeString(nestedName);
+  }
 }
 
 class FixedStruct implements BincodeCodable {
@@ -99,23 +100,6 @@ class FixedStruct implements BincodeCodable {
 
   FixedStruct();
   FixedStruct.create(this.valueA, this.valueB, this.flagC);
-
-  @override
-  Uint8List toBincode() {
-    final writer = BincodeWriter();
-    writer.writeI32(valueA);
-    writer.writeF64(valueB);
-    writer.writeBool(flagC);
-    return writer.toBytes();
-  }
-
-  @override
-  void fromBincode(Uint8List bytes, {bool unsafe = false}) {
-    final reader = BincodeReader(bytes, unsafe: unsafe);
-    valueA = reader.readI32();
-    valueB = reader.readF64();
-    flagC = reader.readBool();
-  }
 
   Map<String, dynamic> toJson() => {
         'valueA': valueA,
@@ -133,6 +117,22 @@ class FixedStruct implements BincodeCodable {
 
   @override
   String toString() => 'Fixed(A:$valueA, B:$valueB, C:$flagC)';
+
+  @override
+  @pragma('vm:prefer-inline')
+  void decode(BincodeReader r) {
+    valueA = r.readI32();
+    valueB = r.readF64();
+    flagC = r.readBool();
+  }
+
+  @override
+  @pragma('vm:prefer-inline')
+  void encode(BincodeWriter w) {
+    w.writeI32(valueA);
+    w.writeF64(valueB);
+    w.writeBool(flagC);
+  }
 }
 
 class MyData implements BincodeCodable {
@@ -184,12 +184,9 @@ class MyData implements BincodeCodable {
   List<FixedStruct> myListOfFixedStructs = [];
 
   MyData();
-
   @override
-  Uint8List toBincode({bool unchecked = false, int initialCapacity = 1024}) {
-    final writer =
-        BincodeWriter(initialCapacity: initialCapacity, unchecked: unchecked);
-
+  @pragma('vm:prefer-inline')
+  void encode(BincodeWriter writer) {
     writer.writeU8(myU8);
     writer.writeU16(myU16);
     writer.writeU32(myU32);
@@ -218,7 +215,6 @@ class MyData implements BincodeCodable {
     writer.writeOptionString(myOptionString);
     writer.writeOptionFixedString(myOptionFixedString, 20);
     writer.writeOptionFixedString(myCleanOptionFixedString, 24);
-    writer.writeOptionF32Triple(myOptionF32Triple);
     writer.writeList<int>(myGenericList, (value) => writer.writeU32(value));
     writer.writeMap<String, bool>(myGenericMap,
         (key) => writer.writeString(key), (value) => writer.writeBool(value));
@@ -245,13 +241,11 @@ class MyData implements BincodeCodable {
     writer.writeList<FixedStruct>(myListOfFixedStructs, (item) {
       writer.writeNestedValueForFixed(item);
     });
-    return writer.toBytes();
   }
 
   @override
-  void fromBincode(Uint8List bytes, {bool unsafe = false}) {
-    final reader = BincodeReader(bytes, unsafe: unsafe);
-
+  @pragma('vm:prefer-inline')
+  void decode(BincodeReader reader) {
     myU8 = reader.readU8();
     myU16 = reader.readU16();
     myU32 = reader.readU32();
@@ -280,7 +274,6 @@ class MyData implements BincodeCodable {
     myOptionString = reader.readOptionString();
     myOptionFixedString = reader.readOptionFixedString(20);
     myCleanOptionFixedString = reader.readCleanOptionFixedString(24);
-    myOptionF32Triple = reader.readOptionF32Triple();
     myGenericList = reader.readList<int>(() => reader.readU32());
     myGenericMap = reader.readMap<String, bool>(
         () => reader.readString(), () => reader.readBool());
@@ -305,11 +298,6 @@ class MyData implements BincodeCodable {
     myListOfFixedStructs = reader.readList<FixedStruct>(() {
       return reader.readNestedObjectForFixed<FixedStruct>(FixedStruct());
     });
-
-    if (reader.remainingBytes() > 0 && !unsafe) {
-      print(
-          "Warning: ${reader.remainingBytes()} bytes remaining after decoding MyData");
-    }
   }
 
   Map<String, dynamic> toJson() {
@@ -439,6 +427,42 @@ class MyData implements BincodeCodable {
     return data;
   }
 
+  void reset() {
+    myU8 = 0;
+    myU16 = 0;
+    myU32 = 0;
+    myU64 = 0;
+    myI8 = 0;
+    myI16 = 0;
+    myI32 = 0;
+    myI64 = 0;
+    myF32 = 0.0;
+    myF64 = 0.0;
+    myBool = false;
+    myOptionU8 = null;
+    myOptionI16 = null;
+    myOptionF64 = null;
+    myOptionBool = null;
+    myString = '';
+    myFixedString = '';
+    myCleanFixedString = '';
+    myOptionString = null;
+    myOptionFixedString = null;
+    myCleanOptionFixedString = null;
+    myOptionF32Triple = null;
+    myGenericList = const [];
+    myGenericMap = const {};
+    myInt8List = const [];
+    myInt32List = Int32List(0);
+    myUint8List = Uint8List(0);
+    myFloat64List = const [];
+    myNestedCollection = NestedData.create(0, '');
+    myOptionalNestedCollection = null;
+    myFixedStructInstance = FixedStruct.create(0, 0.0, false);
+    myOptionalFixedStructInstance = null;
+    myListOfFixedStructs = const [];
+  }
+
   @override
   String toString() {
     return """
@@ -482,14 +506,21 @@ MyData { ... }""";
   }
 }
 
+String _fmtInt(int n) =>
+    n.toString().replaceAllMapped(RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]},');
+
 void runBenchmark({int iterations = 50000}) {
   if (iterations <= 0) {
     print("Iterations must be positive.");
     return;
   }
-  print("--- Starting Benchmark (Iterations: $iterations) ---");
 
-  final originalData = MyData()
+  final title = ' Serialization Benchmark (×${_fmtInt(iterations)}) ';
+  print('\n${'=' * title.length}');
+  print(title);
+  print('${'=' * title.length}\n');
+
+  final original = MyData()
     ..myU8 = 255
     ..myU16 = 65535
     ..myU32 = 0xFFFFFFFF
@@ -519,8 +550,7 @@ void runBenchmark({int iterations = 50000}) {
     ..myUint8List = Uint8List.fromList([0xCA, 0xFE, 0xBA, 0xBE])
     ..myFloat64List = [1.1, 2.2, 3.3]
     ..myNestedCollection = NestedData.create(101, "Dynamic Nested")
-    ..myOptionalNestedCollection =
-        NestedData.create(102, "Optional Dynamic Present")
+    ..myOptionalNestedCollection = NestedData.create(102, "Optional Dynamic Present")
     ..myFixedStructInstance = FixedStruct.create(999, 1.618, true)
     ..myOptionalFixedStructInstance = FixedStruct.create(-1, -2.718, false)
     ..myListOfFixedStructs = [
@@ -529,134 +559,84 @@ void runBenchmark({int iterations = 50000}) {
       FixedStruct.create(203, 20.3, false),
     ];
 
-  Uint8List? bincodeBytes;
-  String? jsonString;
-  int bincodeSize = 0;
-  int jsonSize = 0;
-  MyData? dummyBincodeData;
-  MyData? dummyJsonData;
+   // — One‑shot encoding for size & buffer setup —
+  final bincodeBytes = BincodeWriter.encode(original);
+  final bincodeSize  = bincodeBytes.length;
+  final jsonString   = jsonEncode(original.toJson());
+  final jsonSize     = utf8.encode(jsonString).length;
 
-  final stopwatch = Stopwatch();
+  // — Prepare writer/reader and pre‑reserve exact capacity —
+  final writer = BincodeWriter(initialCapacity: bincodeSize);
+  final measured = writer.measure(original);
+  writer.reserve(measured);
+  writer.reset();
 
-  print("\nBenchmarking Bincode...");
+  final reader = BincodeReader(Uint8List(bincodeSize));
+  Uint8List buffer = Uint8List(bincodeSize);
 
-  stopwatch.start();
-  for (int i = 0; i < iterations; i++) {
-    bincodeBytes = originalData.toBincode(unchecked: true);
+  // ── Benchmark Bincode Serialization ─────────────────────────────
+  final swBincodeSer = Stopwatch()..start();
+  for (var i = 0; i < iterations; i++) {
+    writer.reset();
+    original.encode(writer);
   }
-  stopwatch.stop();
-  final bincodeSerializationTime = stopwatch.elapsedMicroseconds;
-  bincodeSize = bincodeBytes?.length ?? 0;
-  stopwatch.reset();
+  swBincodeSer.stop();
+  buffer = writer.toBytes();
 
-  int bincodeDeserializationTime = 0;
-  if (bincodeBytes != null) {
-    stopwatch.start();
-    for (int i = 0; i < iterations; i++) {
-      dummyBincodeData = MyData();
-      dummyBincodeData.fromBincode(bincodeBytes, unsafe: true);
-    }
-    stopwatch.stop();
-    bincodeDeserializationTime = stopwatch.elapsedMicroseconds;
-  } else {
-    print("Bincode serialization failed, skipping deserialization benchmark.");
+  // ── Benchmark Bincode Deserialization ──────────────────────────
+  final swBincodeDes = Stopwatch()..start();
+  for (var i = 0; i < iterations; i++) {
+    reader.copyFrom(buffer);
+    MyData().decode(reader);
   }
-  stopwatch.reset();
+  swBincodeDes.stop();
 
-  bool bincodeVerified = false;
-  if (bincodeBytes != null) {
-    final verifyDecoded = MyData();
-    verifyDecoded.fromBincode(bincodeBytes, unsafe: true);
-    bincodeVerified = originalData.isSemanticallyEqualTo(verifyDecoded);
+  // ── Benchmark JSON round‑trip ─────────────────────────────────
+  final swJson = Stopwatch()..start();
+  for (var i = 0; i < iterations; i++) {
+    final tmp = jsonEncode(original.toJson());
+    MyData.fromJson(jsonDecode(tmp) as Map<String, dynamic>);
   }
+  swJson.stop();
 
-  final avgBincodeSerTime = bincodeSerializationTime / iterations;
-  final avgBincodeDesTime = bincodeDeserializationTime / iterations;
+  // ── Compute stats ─────────────────────────────────────────────
+  final bSerUs   = swBincodeSer.elapsedMicroseconds.toDouble();
+  final bDesUs   = swBincodeDes.elapsedMicroseconds.toDouble();
+  final jTotalUs = swJson.elapsedMicroseconds.toDouble();
 
-  print(
-      "Bincode Total Serialization Time:   ${(bincodeSerializationTime / 1000).toStringAsFixed(3)} ms");
-  print(
-      "Bincode Average Serialization Time: ${avgBincodeSerTime.toStringAsFixed(3)} µs");
-  print(
-      "Bincode Total Deserialization Time: ${(bincodeDeserializationTime / 1000).toStringAsFixed(3)} ms");
-  print(
-      "Bincode Average Deserialization Time:${avgBincodeDesTime.toStringAsFixed(3)} µs");
-  print("Bincode Serialized Size:            $bincodeSize bytes");
-  print(
-      "Bincode Verification:               ${bincodeVerified ? 'Successful' : 'Failed'}");
-  print("Bincode Dummy Check:                ${dummyBincodeData?.myU8}");
+  final avgBSerUs = bSerUs / iterations;
+  final avgBDesUs = bDesUs / iterations;
+  final avgJUs    = jTotalUs / iterations;
 
-  print("\nBenchmarking JSON...");
-  Map<String, dynamic>? jsonDataMap;
+  final speedupSer = jTotalUs / bSerUs;
+  final speedupDes = jTotalUs / bDesUs;
+  final sizeRatio  = jsonSize / bincodeSize;
+  final savedPct   = (1 - bincodeSize / jsonSize) * 100;
 
-  stopwatch.start();
-  for (int i = 0; i < iterations; i++) {
-    jsonDataMap = originalData.toJson();
-    jsonString = jsonEncode(jsonDataMap);
-  }
-  stopwatch.stop();
-  final jsonSerializationTime = stopwatch.elapsedMicroseconds;
-  jsonSize = jsonString != null ? utf8.encode(jsonString).length : 0;
-  stopwatch.reset();
-
-  int jsonDeserializationTime = 0;
-  if (jsonString != null) {
-    stopwatch.start();
-    for (int i = 0; i < iterations; i++) {
-      final decodedMap = jsonDecode(jsonString) as Map<String, dynamic>;
-
-      dummyJsonData = MyData.fromJson(decodedMap);
-    }
-    stopwatch.stop();
-    jsonDeserializationTime = stopwatch.elapsedMicroseconds;
-  } else {
-    print("JSON serialization failed, skipping deserialization benchmark.");
-  }
-  stopwatch.reset();
-
-  bool jsonVerified = false;
-  if (jsonString != null) {
-    final decodedMap = jsonDecode(jsonString) as Map<String, dynamic>;
-    final verifyDecoded = MyData.fromJson(decodedMap);
-    jsonVerified = originalData.isSemanticallyEqualTo(verifyDecoded);
+  void line(String label, double totalUs, double avgUs) {
+    print('${label.padRight(25)}'
+          'Total: ${(totalUs/1000).toStringAsFixed(2).padLeft(7)}ms   '
+          'Avg: ${avgUs.toStringAsFixed(2).padLeft(7)}µs');
   }
 
-  final avgJsonSerTime = jsonSerializationTime / iterations;
-  final avgJsonDesTime = jsonDeserializationTime / iterations;
+  print('>>> Bincode');
+  line('Serialize',   bSerUs, avgBSerUs);
+  line('Deserialize', bDesUs, avgBDesUs);
+  print('  Size: ${_fmtInt(bincodeSize)} bytes');
 
-  print(
-      "JSON Total Serialization Time:      ${(jsonSerializationTime / 1000).toStringAsFixed(3)} ms");
-  print(
-      "JSON Average Serialization Time:    ${avgJsonSerTime.toStringAsFixed(3)} µs");
-  print(
-      "JSON Total Deserialization Time:    ${(jsonDeserializationTime / 1000).toStringAsFixed(3)} ms");
-  print(
-      "JSON Average Deserialization Time:  ${avgJsonDesTime.toStringAsFixed(3)} µs");
-  print("JSON Serialized Size:               $jsonSize bytes");
-  print(
-      "JSON Verification:                  ${jsonVerified ? 'Successful' : 'Failed'}");
-  print("JSON Dummy Check:                   ${dummyJsonData?.myU8}");
+  print('\n>>> JSON');
+  line('Round‑trip', jTotalUs, avgJUs);
+  print('  Size: ${_fmtInt(jsonSize)} bytes');
 
-  print("\n--- Benchmark Summary (Iterations: $iterations) ---");
-  if (bincodeSerializationTime > 0 && jsonSerializationTime > 0) {
-    print(
-        "Serialization Speed: Bincode is ~${(jsonSerializationTime / bincodeSerializationTime).toStringAsFixed(2)}x faster "
-        "(${avgBincodeSerTime.toStringAsFixed(2)} µs/op vs ${avgJsonSerTime.toStringAsFixed(2)} µs/op)");
-  }
-  if (bincodeDeserializationTime > 0 && jsonDeserializationTime > 0) {
-    print(
-        "Deserialization Speed: Bincode is ~${(jsonDeserializationTime / bincodeDeserializationTime).toStringAsFixed(2)}x faster "
-        "(${avgBincodeDesTime.toStringAsFixed(2)} µs/op vs ${avgJsonDesTime.toStringAsFixed(2)} µs/op)");
-  }
-  if (bincodeSize > 0 && jsonSize > 0) {
-    print(
-        "Size Comparison:     Bincode is ~${(jsonSize / bincodeSize).toStringAsFixed(2)}x smaller");
-    print("   Bincode: $bincodeSize bytes");
-    print("   JSON:    $jsonSize bytes");
-  }
-  print("------------------------------------------");
+  print('\n>>> Speedups & Savings');
+  print('  Serialize speedup:     ${speedupSer.toStringAsFixed(2)}×');
+  print('  Deserialize speedup:   ${speedupDes.toStringAsFixed(2)}×');
+  print('  Size ratio (JSON/B):   ${sizeRatio.toStringAsFixed(2)}×');
+  print('  Saved bytes:           ${_fmtInt(jsonSize - bincodeSize)} '
+        '(${savedPct.toStringAsFixed(1)}% smaller)');
+
+  print('-' * title.length);
 }
-
 void main() async {
   print("--- Running Original Bincode Verification ---");
 
@@ -699,10 +679,15 @@ void main() async {
       FixedStruct.create(202, 20.2, true),
       FixedStruct.create(203, 20.3, false),
     ];
-  Uint8List bincodeBytes = originalData.toBincode();
+
+  final writer = BincodeWriter();
+  originalData.encode(writer);
+  final Uint8List bincodeBytes = writer.toBytes();
   print("\nOriginal Bincode Serialized ${bincodeBytes.length} bytes");
-  final decodedData = MyData();
-  decodedData.fromBincode(bincodeBytes);
+
+  final reader = BincodeReader(bincodeBytes);
+  final decodedData = MyData()..decode(reader);
+
   try {
     assert(decodedData.myU8 == originalData.myU8);
     assert(decodedData.myU16 == originalData.myU16);
@@ -769,9 +754,10 @@ void main() async {
 
   print("\n=========================================");
 
-  runBenchmark(iterations: 500000);
+  runBenchmark(iterations: 5000000);
 }
 
+// Helper as Json is not so powerful :)
 List<T>? _convertTypedList<T>(dynamic list) {
   if (list == null) return null;
   if (list is List<T>) return list;

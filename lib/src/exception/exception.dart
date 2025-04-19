@@ -1,9 +1,22 @@
-// ============================================================
-// Disclaimer: This source code is provided "as is", without any
-// warranty of any kind, express or implied, including but not
-// limited to the warranties of merchantability or fitness for
-// a particular purpose.
-// ============================================================
+// Copyright (c) 2025 Binurie
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 /// Base exception used for all bincode-related errors.
 base class BincodeException implements Exception {
@@ -43,69 +56,4 @@ base class InvalidOptionTagException extends BincodeException {
   InvalidOptionTagException(this.tag)
       : super(
             'Invalid option tag encountered: $tag. Expected 0 (None) or 1 (Some).');
-}
-
-/// Thrown when a character’s encoding does not represent a valid Unicode scalar value.
-///
-/// This error should be thrown during deserialization when the character code
-/// lies in the surrogate range (0xD800–0xDFFF) or outside the valid Unicode range.
-base class InvalidCharEncodingException extends BincodeException {
-  /// The invalid code point encountered.
-  final int codePoint;
-
-  InvalidCharEncodingException(this.codePoint)
-      : super(
-            'Invalid char encoding: code point $codePoint is not a valid Unicode scalar value.');
-}
-
-/// Thrown when the type of the data read does not match the expected type.
-///
-/// This is useful for generic type mismatches where the reader expected, for example,
-/// an unsigned integer but the value decoded is incompatible.
-base class TypeMismatchException extends BincodeException {
-  /// The type that was expected (e.g. "u32", "f64", or "String").
-  final String expected;
-
-  /// The actual value that was encountered.
-  final dynamic actual;
-
-  TypeMismatchException(this.expected, this.actual)
-      : super('Type mismatch: expected $expected, but got value: $actual');
-}
-
-/// Thrown when the end of the buffer is reached unexpectedly during decoding.
-base class UnexpectedEndOfBufferException extends BincodeException {
-  UnexpectedEndOfBufferException()
-      : super('Unexpected end of buffer encountered during decoding.');
-}
-
-/// Thrown when an error occurs during UTF-8 decoding.
-base class Utf8DecodingException extends BincodeException {
-  Utf8DecodingException(String details)
-      : super('UTF-8 decoding error: $details');
-}
-
-/// Base exception for errors that occur during writing.
-base class BincodeWriteException extends BincodeException {
-  BincodeWriteException(super.message, [super.cause]);
-}
-
-/// Thrown when a numeric value is outside the allowed range for its target type.
-base class InvalidWriteRangeException extends BincodeWriteException {
-  /// The value that was written.
-  final int value;
-
-  /// The type being written (for example, 'u64').
-  final String type;
-
-  /// The minimum allowed value.
-  final dynamic minValue;
-
-  /// The maximum allowed value.
-  final dynamic maxValue;
-
-  InvalidWriteRangeException(this.value, this.type,
-      {this.minValue, this.maxValue})
-      : super(
-            'Value $value is out of range for $type. Expected range: ${minValue ?? "-∞"} to ${maxValue ?? "∞"}');
 }
