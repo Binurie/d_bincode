@@ -5,9 +5,9 @@
 A Dart implementation of the [Bincode](https://github.com/bincode-org/bincode) binary serialization format. Designed for efficient, compact, and cross-language data serialization, particularly suitable for Inter-Process Communication (IPC) (my last use case), network protocols, and configuration storage where performance and size matter.
 
 IMPORTANT:
-Currently only fixed int encoding/decoding supported.
+Currently only fixed int encoding/decoding supported in 2.x of rust bincode.
 ```rust
-let config = config::standard().with_fixed_int_encoding(); // <<< this is key
+let config = config::standard().with_fixed_int_encoding(); // <<< this is key in 2.x
 ```
 
 Dart implementation of the Bincode binary format. Manual BincodeCodable implementation is currently required, providing control but demanding more setup. Future build_runner code generation is planned but subject to change.
