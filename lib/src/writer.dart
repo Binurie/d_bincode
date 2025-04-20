@@ -33,13 +33,13 @@ import 'codable.dart';
 class BincodeWriter implements BincodeWriterBuilder {
   // — internal buffer and cursors —
   Uint8List _bytes;
-  final Uint8List _convBytes = Uint8List(8);
-  late final Float32List _conv32 = Float32List.view(_convBytes.buffer);
-  late final Float64List _conv64 = Float64List.view(_convBytes.buffer);
 
   int _pos = 0; // write cursor
   int _length = 0; // high‑water mark
   int _capacity; // buffer size
+
+  /// The managed ByteData view, updated when _bytes changes.
+  ByteData? _dataView;
 
   /// A fast, flexible binary serializer for Rust-compatible Bincode data.
   ///
@@ -81,10 +81,43 @@ class BincodeWriter implements BincodeWriterBuilder {
   /// - Structs → fixed layout or collection-style nested with length prefix
   BincodeWriter({
     int initialCapacity = 128,
-    @Deprecated('Use unchecked') bool? unsafe,
   })  : assert(initialCapacity > 0),
         _capacity = initialCapacity,
-        _bytes = Uint8List(initialCapacity);
+        _bytes = Uint8List(initialCapacity) {
+    _updateView();
+  }
+
+  void _updateView() {
+    _dataView = ByteData.view(_bytes.buffer, _bytes.offsetInBytes, _capacity);
+  }
+
+  // ─── Growth & Tracking ──────────────────────────────────────────────────────
+
+  @pragma('vm:prefer-inline')
+  void _ensureCapacity(int needed) {
+    final minRequired = _pos + needed;
+    if (minRequired > _capacity) {
+      int newCap = _capacity * 2;
+      if (newCap < minRequired) newCap = minRequired;
+
+      final newBytes = Uint8List(newCap);
+      newBytes.setRange(0, _length, _bytes, 0);
+
+      _bytes = newBytes;
+      _capacity = newCap;
+      _updateView();
+    }
+  }
+
+  @pragma('vm:prefer-inline')
+  void _track(int newPos) {
+    _pos = newPos;
+    if (newPos > _length) {
+      _length = newPos;
+    }
+  }
+
+  // ─── Utils ──────────────────────────────────────────────────────
 
   /// Resets the writer to an empty state, clearing any previously written bytes.
   ///
@@ -115,6 +148,7 @@ class BincodeWriter implements BincodeWriterBuilder {
     // Reset internal positions
     _pos = 0;
     _length = 0;
+    _updateView();
   }
 
   /// Helps track how full the buffer is (especially if you pre-allocated).
@@ -300,9 +334,12 @@ class BincodeWriter implements BincodeWriterBuilder {
   /// ```
   void reserve(int minCapacity) {
     if (_capacity < minCapacity) {
-      final buf = Uint8List(minCapacity)..setRange(0, _pos, _bytes);
-      _bytes = buf;
-      _capacity = minCapacity;
+      final newCap =
+          (minCapacity > _capacity * 2) ? minCapacity : _capacity * 2;
+      final newBytes = Uint8List(newCap)..setRange(0, _length, _bytes, 0);
+      _bytes = newBytes;
+      _capacity = newCap;
+      _updateView();
     }
   }
 
@@ -373,26 +410,6 @@ class BincodeWriter implements BincodeWriterBuilder {
     File(path).writeAsBytesSync(bytes, flush: true);
   }
 
-  // ─── Growth & Tracking ──────────────────────────────────────────────────────
-
-  @pragma('vm:prefer-inline')
-  void _ensureCapacity(int needed) {
-    final min = _pos + needed;
-    if (min > _capacity) {
-      int newCap = _capacity * 2;
-      if (newCap < min) newCap = min;
-      final buf = Uint8List(newCap)..setRange(0, _pos, _bytes);
-      _bytes = buf;
-      _capacity = newCap;
-    }
-  }
-
-  @pragma('vm:prefer-inline')
-  void _track(int newPos) {
-    _pos = newPos;
-    if (newPos > _length) _length = newPos;
-  }
-
 // ─── Primitive Writes ───────────────────────────────────────────────────────
 
   /// Writes an unsigned 8‑bit integer [v], matching Rust’s `u8`.
@@ -411,7 +428,8 @@ class BincodeWriter implements BincodeWriterBuilder {
   @pragma('vm:prefer-inline')
   void writeU8(int v) {
     _ensureCapacity(1);
-    _bytes[_pos] = v & 0xFF;
+    final p = _pos;
+    _dataView!.setUint8(p, v);
     _track(_pos + 1);
   }
 
@@ -431,8 +449,7 @@ class BincodeWriter implements BincodeWriterBuilder {
   void writeU16(int v) {
     _ensureCapacity(2);
     final p = _pos;
-    _bytes[p] = v & 0xFF;
-    _bytes[p + 1] = (v >> 8) & 0xFF;
+    _dataView!.setUint16(p, v, Endian.little);
     _track(p + 2);
   }
 
@@ -451,10 +468,7 @@ class BincodeWriter implements BincodeWriterBuilder {
   void writeU32(int v) {
     _ensureCapacity(4);
     final p = _pos;
-    _bytes[p] = v & 0xFF;
-    _bytes[p + 1] = (v >> 8) & 0xFF;
-    _bytes[p + 2] = (v >> 16) & 0xFF;
-    _bytes[p + 3] = (v >> 24) & 0xFF;
+    _dataView!.setUint32(p, v, Endian.little);
     _track(p + 4);
   }
 
@@ -473,14 +487,7 @@ class BincodeWriter implements BincodeWriterBuilder {
   void writeU64(int v) {
     _ensureCapacity(8);
     final p = _pos;
-    _bytes[p] = v & 0xFF;
-    _bytes[p + 1] = (v >> 8) & 0xFF;
-    _bytes[p + 2] = (v >> 16) & 0xFF;
-    _bytes[p + 3] = (v >> 24) & 0xFF;
-    _bytes[p + 4] = (v >> 32) & 0xFF;
-    _bytes[p + 5] = (v >> 40) & 0xFF;
-    _bytes[p + 6] = (v >> 48) & 0xFF;
-    _bytes[p + 7] = (v >> 56) & 0xFF;
+    _dataView!.setUint64(p, v, Endian.little);
     _track(p + 8);
   }
 
@@ -509,8 +516,7 @@ class BincodeWriter implements BincodeWriterBuilder {
   void writeI16(int v) {
     _ensureCapacity(2);
     final p = _pos;
-    _bytes[p] = v & 0xFF;
-    _bytes[p + 1] = (v >> 8) & 0xFF;
+    _dataView!.setInt16(p, v, Endian.little);
     _track(p + 2);
   }
 
@@ -527,10 +533,7 @@ class BincodeWriter implements BincodeWriterBuilder {
   void writeI32(int v) {
     _ensureCapacity(4);
     final p = _pos;
-    _bytes[p] = v & 0xFF;
-    _bytes[p + 1] = (v >> 8) & 0xFF;
-    _bytes[p + 2] = (v >> 16) & 0xFF;
-    _bytes[p + 3] = (v >> 24) & 0xFF;
+    _dataView!.setInt32(p, v, Endian.little);
     _track(p + 4);
   }
 
@@ -547,14 +550,7 @@ class BincodeWriter implements BincodeWriterBuilder {
   void writeI64(int v) {
     _ensureCapacity(8);
     final p = _pos;
-    _bytes[p] = v & 0xFF;
-    _bytes[p + 1] = (v >> 8) & 0xFF;
-    _bytes[p + 2] = (v >> 16) & 0xFF;
-    _bytes[p + 3] = (v >> 24) & 0xFF;
-    _bytes[p + 4] = (v >> 32) & 0xFF;
-    _bytes[p + 5] = (v >> 40) & 0xFF;
-    _bytes[p + 6] = (v >> 48) & 0xFF;
-    _bytes[p + 7] = (v >> 56) & 0xFF;
+    _dataView!.setInt64(p, v, Endian.little);
     _track(p + 8);
   }
 
@@ -573,11 +569,7 @@ class BincodeWriter implements BincodeWriterBuilder {
   void writeF32(double x) {
     _ensureCapacity(4);
     final p = _pos;
-    _conv32[0] = x;
-    _bytes[p] = _convBytes[0];
-    _bytes[p + 1] = _convBytes[1];
-    _bytes[p + 2] = _convBytes[2];
-    _bytes[p + 3] = _convBytes[3];
+    _dataView!.setFloat32(p, x, Endian.little);
     _track(p + 4);
   }
 
@@ -594,15 +586,7 @@ class BincodeWriter implements BincodeWriterBuilder {
   void writeF64(double x) {
     _ensureCapacity(8);
     final p = _pos;
-    _conv64[0] = x;
-    _bytes[p] = _convBytes[0];
-    _bytes[p + 1] = _convBytes[1];
-    _bytes[p + 2] = _convBytes[2];
-    _bytes[p + 3] = _convBytes[3];
-    _bytes[p + 4] = _convBytes[4];
-    _bytes[p + 5] = _convBytes[5];
-    _bytes[p + 6] = _convBytes[6];
-    _bytes[p + 7] = _convBytes[7];
+    _dataView!.setFloat64(p, x, Endian.little);
     _track(p + 8);
   }
 
