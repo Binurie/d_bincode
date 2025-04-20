@@ -33,16 +33,16 @@ class NestedData implements BincodeCodable {
   String toString() {
     return 'NestedData(id: $nestedId, name: "$nestedName")';
   }
-  
+
   @override
   void decode(BincodeReader r) {
     nestedId = r.readI32();
     nestedName = r.readString();
   }
-  
+
   @override
   void encode(BincodeWriter w) {
-     w.writeI32(nestedId); // i32
+    w.writeI32(nestedId); // i32
     w.writeString(nestedName); // String (variable length!)
   }
 }
@@ -57,14 +57,14 @@ class FixedStruct implements BincodeCodable {
 
   @override
   String toString() => 'Fixed(A:$valueA, B:$valueB, C:$flagC)';
-  
+
   @override
   void decode(BincodeReader reader) {
-     valueA = reader.readI32();
+    valueA = reader.readI32();
     valueB = reader.readF64();
     flagC = reader.readBool();
   }
-  
+
   @override
   void encode(BincodeWriter writer) {
     writer.writeI32(valueA);
@@ -222,7 +222,6 @@ class MyData implements BincodeCodable {
 
   @override
   void decode(BincodeReader reader) {
-
     // --- Read Primitives ---
     myU8 = reader.readU8();
     myU16 = reader.readU16();
@@ -256,7 +255,6 @@ class MyData implements BincodeCodable {
     myOptionString = reader.readOptionString();
     myOptionFixedString = reader.readOptionFixedString(20);
     myCleanOptionFixedString = reader.readCleanOptionFixedString(24);
-
 
     // --- Read Generic Collections ---
     myGenericList = reader.readList<int>(() => reader.readU32());

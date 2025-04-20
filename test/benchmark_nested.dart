@@ -23,7 +23,6 @@ import 'dart:typed_data';
 
 import 'package:d_bincode/d_bincode.dart';
 
-
 /// Benchmark Performance Disclaimer: The provided benchmark figures reflect
 /// performance under specific, controlled test conditions. Actual results
 /// in deployment may differ substantially due to variations in hardware
@@ -506,8 +505,9 @@ MyData { ... }""";
   }
 }
 
-String _fmtInt(int n) =>
-    n.toString().replaceAllMapped(RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]},');
+String _fmtInt(int n) => n
+    .toString()
+    .replaceAllMapped(RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]},');
 
 void runBenchmark({int iterations = 50000}) {
   if (iterations <= 0) {
@@ -550,7 +550,8 @@ void runBenchmark({int iterations = 50000}) {
     ..myUint8List = Uint8List.fromList([0xCA, 0xFE, 0xBA, 0xBE])
     ..myFloat64List = [1.1, 2.2, 3.3]
     ..myNestedCollection = NestedData.create(101, "Dynamic Nested")
-    ..myOptionalNestedCollection = NestedData.create(102, "Optional Dynamic Present")
+    ..myOptionalNestedCollection =
+        NestedData.create(102, "Optional Dynamic Present")
     ..myFixedStructInstance = FixedStruct.create(999, 1.618, true)
     ..myOptionalFixedStructInstance = FixedStruct.create(-1, -2.718, false)
     ..myListOfFixedStructs = [
@@ -559,11 +560,11 @@ void runBenchmark({int iterations = 50000}) {
       FixedStruct.create(203, 20.3, false),
     ];
 
-   // — One‑shot encoding for size & buffer setup —
+  // — One‑shot encoding for size & buffer setup —
   final bincodeBytes = BincodeWriter.encode(original);
-  final bincodeSize  = bincodeBytes.length;
-  final jsonString   = jsonEncode(original.toJson());
-  final jsonSize     = utf8.encode(jsonString).length;
+  final bincodeSize = bincodeBytes.length;
+  final jsonString = jsonEncode(original.toJson());
+  final jsonSize = utf8.encode(jsonString).length;
 
   // — Prepare writer/reader and pre‑reserve exact capacity —
   final writer = BincodeWriter(initialCapacity: bincodeSize);
@@ -600,27 +601,27 @@ void runBenchmark({int iterations = 50000}) {
   swJson.stop();
 
   // ── Compute stats ─────────────────────────────────────────────
-  final bSerUs   = swBincodeSer.elapsedMicroseconds.toDouble();
-  final bDesUs   = swBincodeDes.elapsedMicroseconds.toDouble();
+  final bSerUs = swBincodeSer.elapsedMicroseconds.toDouble();
+  final bDesUs = swBincodeDes.elapsedMicroseconds.toDouble();
   final jTotalUs = swJson.elapsedMicroseconds.toDouble();
 
   final avgBSerUs = bSerUs / iterations;
   final avgBDesUs = bDesUs / iterations;
-  final avgJUs    = jTotalUs / iterations;
+  final avgJUs = jTotalUs / iterations;
 
   final speedupSer = jTotalUs / bSerUs;
   final speedupDes = jTotalUs / bDesUs;
-  final sizeRatio  = jsonSize / bincodeSize;
-  final savedPct   = (1 - bincodeSize / jsonSize) * 100;
+  final sizeRatio = jsonSize / bincodeSize;
+  final savedPct = (1 - bincodeSize / jsonSize) * 100;
 
   void line(String label, double totalUs, double avgUs) {
     print('${label.padRight(25)}'
-          'Total: ${(totalUs/1000).toStringAsFixed(2).padLeft(7)}ms   '
-          'Avg: ${avgUs.toStringAsFixed(2).padLeft(7)}µs');
+        'Total: ${(totalUs / 1000).toStringAsFixed(2).padLeft(7)}ms   '
+        'Avg: ${avgUs.toStringAsFixed(2).padLeft(7)}µs');
   }
 
   print('>>> Bincode');
-  line('Serialize',   bSerUs, avgBSerUs);
+  line('Serialize', bSerUs, avgBSerUs);
   line('Deserialize', bDesUs, avgBDesUs);
   print('  Size: ${_fmtInt(bincodeSize)} bytes');
 
@@ -633,10 +634,11 @@ void runBenchmark({int iterations = 50000}) {
   print('  Deserialize speedup:   ${speedupDes.toStringAsFixed(2)}×');
   print('  Size ratio (JSON/B):   ${sizeRatio.toStringAsFixed(2)}×');
   print('  Saved bytes:           ${_fmtInt(jsonSize - bincodeSize)} '
-        '(${savedPct.toStringAsFixed(1)}% smaller)');
+      '(${savedPct.toStringAsFixed(1)}% smaller)');
 
   print('-' * title.length);
 }
+
 void main() async {
   print("--- Running Original Bincode Verification ---");
 

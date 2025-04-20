@@ -34,7 +34,7 @@ import 'package:d_bincode/d_bincode.dart';
 /// context and requirements.
 
 // ==========================================
-//  Minimal Payload Benchmark (×100,000,000) 
+//  Minimal Payload Benchmark (×100,000,000)
 // ==========================================
 
 // Bincode Encode     | Total:   371.6ms | Avg:   0.004µs
@@ -78,11 +78,9 @@ class TinyMessage implements BincodeCodable {
   Map<String, dynamic> toJson() => {"number": number};
 }
 
-
-
-String _fmtInt(int n) =>
-    n.toString().replaceAllMapped(
-        RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]},');
+String _fmtInt(int n) => n
+    .toString()
+    .replaceAllMapped(RegExp(r'(\d)(?=(\d{3})+(?!\d))'), (m) => '${m[1]},');
 
 void main() {
   const iterations = 100000000;
@@ -90,15 +88,15 @@ void main() {
 
   // ── One‑shot serialization to figure out sizes ─────────────────────
   final encodedBincode = BincodeWriter.encode(message);
-  final binSize        = encodedBincode.length;
-  final jsonString     = json.encode(message.toJson());
-  final jsonBytes      = utf8.encode(jsonString);
-  final jsonSize       = jsonBytes.length;
+  final binSize = encodedBincode.length;
+  final jsonString = json.encode(message.toJson());
+  final jsonBytes = utf8.encode(jsonString);
+  final jsonSize = jsonBytes.length;
 
   // ── Prepare a writer that's exactly the right size ─────────────────
   final writer = BincodeWriter(initialCapacity: binSize);
-  final needed = writer.measure(message);  // how many bytes we'll actually write
-  writer.reserve(needed);                  // grow to exactly that, no copies in loop
+  final needed = writer.measure(message); // how many bytes we'll actually write
+  writer.reserve(needed); // grow to exactly that, no copies in loop
   writer.reset();
 
   final reader = BincodeReader(Uint8List(needed));
@@ -142,27 +140,27 @@ void main() {
   final totalJsonUs = swJson.elapsedMicroseconds.toDouble();
 
   // ── Compute stats ────────────────────────────────────────────────
-  final avgEncUs    = totalEncUs    / iterations;
-  final avgDecUs    = totalDecUs    / iterations;
-  final avgJsonUs   = totalJsonUs   / iterations;
-  final totalRtUs   = totalEncUs + totalDecUs;
-  final avgRtUs     = totalRtUs     / iterations;
+  final avgEncUs = totalEncUs / iterations;
+  final avgDecUs = totalDecUs / iterations;
+  final avgJsonUs = totalJsonUs / iterations;
+  final totalRtUs = totalEncUs + totalDecUs;
+  final avgRtUs = totalRtUs / iterations;
 
-  final msEnc       = totalEncUs / 1000.0;
-  final msDec       = totalDecUs / 1000.0;
-  final msJson      = totalJsonUs  / 1000.0;
-  final msRt        = totalRtUs    / 1000.0;
+  final msEnc = totalEncUs / 1000.0;
+  final msDec = totalDecUs / 1000.0;
+  final msJson = totalJsonUs / 1000.0;
+  final msRt = totalRtUs / 1000.0;
 
-  final speedEnc    = msJson / msEnc;
-  final speedDec    = msJson / msDec;
-  final speedRt     = msJson / msRt;
+  final speedEnc = msJson / msEnc;
+  final speedDec = msJson / msDec;
+  final speedRt = msJson / msRt;
 
-  final sizeRatio   = jsonSize / binSize;
-  final pctSaved    = (1 - binSize / jsonSize) * 100;
-  final bytesSaved  = jsonSize - binSize;
-  final totalSaved  = bytesSaved * iterations;
-  final savedKB     = totalSaved / 1024;
-  final savedMB     = savedKB / 1024;
+  final sizeRatio = jsonSize / binSize;
+  final pctSaved = (1 - binSize / jsonSize) * 100;
+  final bytesSaved = jsonSize - binSize;
+  final totalSaved = bytesSaved * iterations;
+  final savedKB = totalSaved / 1024;
+  final savedMB = savedKB / 1024;
 
   final title = ' Minimal Payload Benchmark (×${_fmtInt(iterations)}) ';
   print('\n${'=' * title.length}');
@@ -171,15 +169,15 @@ void main() {
 
   void row(String label, double totalMs, double avgUs) {
     print('${label.padRight(18)} | '
-          'Total: ${totalMs.toStringAsFixed(1).padLeft(7)}ms | '
-          'Avg: ${avgUs.toStringAsFixed(3).padLeft(7)}µs');
+        'Total: ${totalMs.toStringAsFixed(1).padLeft(7)}ms | '
+        'Avg: ${avgUs.toStringAsFixed(3).padLeft(7)}µs');
   }
 
-  row('Bincode Encode',    msEnc,   avgEncUs);
-  row('Bincode Decode',    msDec,   avgDecUs);
-  row('JSON round‑trip',   msJson,  avgJsonUs);
+  row('Bincode Encode', msEnc, avgEncUs);
+  row('Bincode Decode', msDec, avgDecUs);
+  row('JSON round‑trip', msJson, avgJsonUs);
   print('-' * 50);
-  row('Round‑trips',       msRt,    avgRtUs);
+  row('Round‑trips', msRt, avgRtUs);
 
   print('\nSpeed‑ups vs JSON:');
   print('  • Encode faster:      ${speedEnc.toStringAsFixed(2)}×');
