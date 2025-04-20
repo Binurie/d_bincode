@@ -41,7 +41,7 @@ Add `d_bincode` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  d_bincode: ^3.0.1
+  d_bincode: ^3.1.0
 ````
 
 Or install using the command line:

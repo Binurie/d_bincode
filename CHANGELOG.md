@@ -4,7 +4,7 @@
 
 ## 1.0.1
 
-- Added nested objects/classes support - writeNested,  writeOptionalNested, readNestedObject, readOptionalNestedObject.
+- Added nested objects/classes support - writeNested, writeOptionalNested, readNestedObject, readOptionalNestedObject.
 - `toBincode()` / `fromBincode()` API inherit from BincodeEncodable / BincodeDecodable.
 - Added error handling and validation.
 - Removed `Debuggable` and `Fluent` APIs.
@@ -15,45 +15,54 @@
 
 ### Breaking Changes
 
-* Removed `length` parameter from `read*List` methods (now reads length prefix). Update calls by removing the argument.
-* Renamed `loadFromBytes` to `fromBincode`.
+- Removed `length` parameter from `read*List` methods (now reads length prefix). Update calls by removing the argument.
+- Renamed `loadFromBytes` to `fromBincode`.
 
 ### Added
 
-* Optional `unsafe`/`unchecked` flags for `BincodeReader`/`BincodeWriter` to bypass checks for performance.
-* New `readNestedObjectForFixed` and `readOptionNestedObjectForFixed` methods for fixed-size object reading.
-* `readRawBytes(int length)` method.
+- Optional `unsafe`/`unchecked` flags for `BincodeReader`/`BincodeWriter` to bypass checks for performance.
+- New `readNestedObjectForFixed` and `readOptionNestedObjectForFixed` methods for fixed-size object reading.
+- `readRawBytes(int length)` method.
 
 ### Deprecated
 
-* `readNestedObject` / `readOptionNestedObject`. Use `ForCollection` or `ForFixed` variants instead.
+- `readNestedObject` / `readOptionNestedObject`. Use `ForCollection` or `ForFixed` variants instead.
 
 ### Removed
 
-* Internal implementation classes (`Builder`, `Wrapper`, `Exception`) from public API.
-
+- Internal implementation classes (`Builder`, `Wrapper`, `Exception`) from public API.
 
 ## 3.0.0
 
 ### Breaking Changes
 
-* BincodeEncodable & BincodeDecodable use now encode(BincodeReader reader) and decode(BincodeWriter writer) - from and toBincode are removed.
- 
+- BincodeEncodable & BincodeDecodable use now encode(BincodeReader reader) and decode(BincodeWriter writer) - from and toBincode are removed.
+
 ### Added
 
-* More static methods for BincodeWriter and BincodeReader
-* Improved performance by alot by removing Wrapper overheat and overall impls of the methods 
-* More methods for BincodeWriter and BincodeReader for manual buffer modifications
+- More static methods for BincodeWriter and BincodeReader
+- Improved performance by alot by removing Wrapper overheat and overall impls of the methods
+- More methods for BincodeWriter and BincodeReader for manual buffer modifications
 
 ### Removed
 
-* ByteDataWrapper removed to increase performance
-* String Encode and Decode Method's and Enums removed - only utf8/ASCII Supported
-* Less Exceptions and checks
-* euc dependency got removed
+- ByteDataWrapper removed to increase performance
+- String Encode and Decode Method's and Enums removed - only utf8/ASCII Supported
+- Less Exceptions and checks
+- euc dependency got removed
 
 ## 3.0.1
 
 ### Patch
 
-* Fixed formating and describtion in pubspec.
+- Fixed formating and describtion in pubspec.
+
+## 3.1.0
+
+### Added
+
+- Support for serializing/deserializing Dart `String` (single character) as Rust `char` (via `u32` rune - Bincode v1/legacy compatible) using `writeChar`/`readChar` and `writeOptionChar`/`readOptionChar`.
+- Support for fixed-size arrays (Rust `[T; N]`) via `writeFixedArray`/`readFixedArray`, which serialize elements sequentially without a length prefix.
+- Support for `Set<T>` via `writeSet`/`readSet`, serializing like `Vec<T>` (u64 length prefix + elements).
+- Support for Rust-style enum discriminants (variant index) via `writeEnumDiscriminant`/`readEnumDiscriminant` (using `u32`) and `writeOptionEnumDiscriminant`/`readOptionEnumDiscriminant`.
+- Support for `Duration` via `writeDuration`/`readDuration` and `writeOptionDuration`/`readOptionDuration`, using a format compatible with Rust's `chrono::Duration` (i64 seconds + u32 nanos).
