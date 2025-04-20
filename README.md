@@ -151,29 +151,36 @@ try {
 
 ### Supported Types and Methods
 
-| Type                       | Writer Method(s)                                                  | Reader Method(s)                                                  | Notes                                            |
-| :------------------------- | :---------------------------------------------------------------- | :---------------------------------------------------------------- | :----------------------------------------------- |
-| `int` (u8)                 | `writeU8`                                                         | `readU8`                                                          | 8-bit unsigned integer                           |
-| `int` (u16)                | `writeU16`                                                        | `readU16`                                                         | 16-bit unsigned integer (Little Endian)        |
-| `int` (u32)                | `writeU32`                                                        | `readU32`                                                         | 32-bit unsigned integer (Little Endian)        |
-| `int` (u64)                | `writeU64`                                                        | `readU64`                                                         | 64-bit unsigned integer (Little Endian)        |
-| `int` (i8)                 | `writeI8`                                                         | `readI8`                                                          | 8-bit signed integer                           |
-| `int` (i16)                | `writeI16`                                                        | `readI16`                                                         | 16-bit signed integer (Little Endian)          |
-| `int` (i32)                | `writeI32`                                                        | `readI32`                                                         | 32-bit signed integer (Little Endian)          |
-| `int` (i64)                | `writeI64`                                                        | `readI64`                                                         | 64-bit signed integer (Little Endian)          |
-| `double` (f32)             | `writeF32`                                                        | `readF32`                                                         | 32-bit float (IEEE 754, Little Endian)       |
-| `double` (f64)             | `writeF64`                                                        | `readF64`                                                         | 64-bit float (IEEE 754, Little Endian)       |
-| `bool`                     | `writeBool`                                                       | `readBool`                                                        | `1` for true, `0` for false                    |
-| `String`                   | `writeString`                                                     | `readString`                                                      | UTF-8, length-prefixed (u64)                 |
-| `String` (fixed)           | `writeFixedString(value, len)`                                    | `readFixedString(len)`, `readCleanFixedString(len)`               | Fixed byte length, padded/truncated            |
-| `T?` (Option<T>)           | `writeOption<Type>`, `writeOptionBool`, etc.                      | `readOption<Type>`, `readOptionBool`, etc.                      | `0` tag for None, `1` tag + value for Some     |
-| `List<T>`                  | `writeList(list, elementWriter)`                                  | `readList(elementReader)`                                         | Length-prefixed (u64) + elements               |
-| `Map<K, V>`                | `writeMap(map, keyWriter, valueWriter)`                           | `readMap(keyReader, valueReader)`                                 | Length-prefixed (u64) + key/value pairs        |
-| `Uint8List`                | `writeUint8List`, `writeBytes`                                    | `readUint8List`, `readBytes(len)`                                 | Length-prefixed (u64) or raw bytes           |
-| Integer `TypedData`        | `writeInt8List`, `writeUint16List`, `writeInt32List`, etc.        | `readInt8List`, `readUint16List`, `readInt32List`, etc.           | Length-prefixed (u64) + typed integer data |
-| Float `TypedData`          | `writeFloat32List`, `writeFloat64List`                            | `readFloat32List`, `readFloat64List`                            | Length-prefixed (u64) + typed float data     |
-| `BincodeCodable` (Nested)  | `writeNestedValueForFixed`, `writeNestedValueForCollection`       | `readNestedObjectForFixed`, `readNestedObjectForCollection`       | Handles nested serializable objects            |
-| `BincodeCodable?` (Nested) | `writeOptionNestedValueForFixed`, `writeOptionNestedValueForCollection` | `readOptionNestedObjectForFixed`, `readOptionNestedObjectForCollection` | Handles optional nested serializable objects |
+| Type                       | Writer Method(s)                                             | Reader Method(s)                                                       | Notes                                               |
+| :------------------------- | :----------------------------------------------------------- | :--------------------------------------------------------------------- | :-------------------------------------------------- |
+| `int` (u8)                 | `writeU8`                                                    | `readU8`                                                               | 8-bit unsigned integer                            |
+| `int` (u16)                | `writeU16`                                                   | `readU16`                                                              | 16-bit unsigned integer (Little Endian)           |
+| `int` (u32)                | `writeU32`                                                   | `readU32`                                                              | 32-bit unsigned integer (Little Endian)           |
+| `int` (u64)                | `writeU64`                                                   | `readU64`                                                              | 64-bit unsigned integer (Little Endian)           |
+| `int` (i8)                 | `writeI8`                                                    | `readI8`                                                               | 8-bit signed integer                              |
+| `int` (i16)                | `writeI16`                                                   | `readI16`                                                              | 16-bit signed integer (Little Endian)             |
+| `int` (i32)                | `writeI32`                                                   | `readI32`                                                              | 32-bit signed integer (Little Endian)             |
+| `int` (i64)                | `writeI64`                                                   | `readI64`                                                              | 64-bit signed integer (Little Endian)             |
+| `double` (f32)             | `writeF32`                                                   | `readF32`                                                              | 32-bit float (IEEE 754, Little Endian)            |
+| `double` (f64)             | `writeF64`                                                   | `readF64`                                                              | 64-bit float (IEEE 754, Little Endian)            |
+| `bool`                     | `writeBool`                                                  | `readBool`                                                             | `1` for true, `0` for false                       |
+| `String` (char)            | `writeChar(char)`                                            | `readChar()`                                                           | Single Unicode char (rune as u32 - Bincode v1/legacy) |
+| `String`                   | `writeString`                                                | `readString`                                                           | UTF-8, length-prefixed (u64)                      |
+| `String` (fixed)           | `writeFixedString(value, len)`                               | `readFixedString(len)`, `readCleanFixedString(len)`                    | Fixed byte length, padded/truncated               |
+| `T?` (Option\<T\>)           | `writeOption<Type>`, `writeOptionBool`, etc.                  | `readOption<Type>`, `readOptionBool`, etc.                             | `0` tag for None, `1` tag + value for Some        |
+| `String?` (optional char)  | `writeOptionChar(char)`                                      | `readOptionChar()`                                                     | `Option<char>`: tag (u8) + char (u32) if Some     |
+| `List<T>`                  | `writeList(list, elementWriter)`                             | `readList(elementReader)`                                              | `Vec<T>`: Length-prefixed (u64) + elements        |
+| `List<T>` (fixed array)    | `writeFixedArray(list, len, elementWriter)`                  | `readFixedArray(len, elementReader)`                                   | `[T; N]`: Fixed size, no length prefix            |
+| `Set<T>`                   | `writeSet(set, elementWriter)`                               | `readSet(elementReader)`                                               | Like `Vec<T>`: length-prefixed (u64) + elements   |
+| `Map<K, V>`                | `writeMap(map, keyWriter, valueWriter)`                      | `readMap(keyReader, valueReader)`                                      | Length-prefixed (u64) + key/value pairs           |
+| `Uint8List`                | `writeUint8List`, `writeBytes`                               | `readUint8List`, `readBytes(len)`, `readRawBytes(len)`                 | Length-prefixed (u64) or raw bytes                |
+| Integer `TypedData`        | `writeInt8List`, `writeUint16List`, `writeInt32List`, etc.   | `readInt8List`, `readUint16List`, `readInt32List`, etc.                | `Vec<Int>`: Length-prefixed (u64) + typed data    |
+| Float `TypedData`          | `writeFloat32List`, `writeFloat64List`                       | `readFloat32List`, `readFloat64List`                                   | `Vec<Float>`: Length-prefixed (u64) + typed data  |
+| `BincodeCodable` (Nested)  | `writeNestedValueForFixed`, `writeNestedValueForCollection`  | `readNestedObjectForFixed`, `readNestedObjectForCollection`            | Handles nested serializable objects               |
+| `BincodeCodable?` (Nested) | `writeOptionNestedValueForFixed`, `writeOptionNestedValueForCollection` | `readOptionNestedObjectForFixed`, `readOptionNestedObjectForCollection` | Handles optional nested serializable objects    |
+| `int` (enum discriminant)  | `writeEnumDiscriminant(discriminant)`                        | `readEnumDiscriminant()`                                               | Represents enum variant index (u32 - legacy mode) |
+| `Duration`                 | `writeDuration(duration)`                                    | `readDuration()`                                                       | Custom: seconds (i64) + nanos (u32)               |
+| `Duration?`                | `writeOptionDuration(duration)`                              | `readOptionDuration()`                                                 | `Option<Duration>`: tag (u8) + duration if Some |
 
 ### Working with Nested Objects
 
