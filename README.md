@@ -263,25 +263,25 @@ class Outer implements BincodeCodable {
 Results from serializing/deserializing a complex, multi-level nested object 5 million times:
 
 ```text
-// ======================================
-//  Serialization Benchmark (×5,000,000)
-// ======================================
+======================================
+ Serialization Benchmark (×5,000,000)
+======================================
 
-// >>> Bincode
-// Serialize                  Total: 6949.34ms   Avg:     1.39µs
-// Deserialize                Total: 8864.11ms   Avg:     1.77µs
-//   Size: 518 bytes
+>>> Bincode
+Serialize                Total: 6311.90ms   Avg:    1.26µs
+Deserialize              Total: 9677.11ms   Avg:    1.94µs
+  Size: 518 bytes
 
-// >>> JSON
-// Round‐trip                 Total: 145482.86ms   Avg:   29.10µs
-//   Size: 1,420 bytes
+>>> JSON
+Round‑trip               Total: 144801.50ms   Avg:   28.96µs
+  Size: 1,420 bytes
 
-// >>> Speedups & Savings
-//   Serialize speedup:     20.93×
-//   Deserialize speedup:   16.41×
-//   Size ratio (JSON/B):   2.74×
-//   Saved bytes:           902 (63.5% smaller)
-// --------------------------------------
+>>> Speedups & Savings
+  Serialize speedup:     22.94×
+  Deserialize speedup:   14.96×
+  Size ratio (JSON/B):   2.74×
+  Saved bytes:           902 (63.5% smaller)
+--------------------------------------
 ```
 
 ### Simple Data Test (Single u32)
@@ -289,31 +289,31 @@ Results from serializing/deserializing a complex, multi-level nested object 5 mi
 Results from serializing/deserializing a single 32-bit unsigned integer 100 million times:
 
 ```text
-// ==========================================
-//  Minimal Payload Benchmark (×100,000,000)
-// ==========================================
+==========================================
+ Minimal Payload Benchmark (×100,000,000) 
+==========================================
 
-// Bincode Encode     | Total:   371.6ms | Avg:   0.004µs
-// Bincode Decode     | Total:   889.2ms | Avg:   0.009µs
-// JSON round‐trip    | Total: 50865.3ms | Avg:   0.509µs
-// --------------------------------------------------
-// Bincode Round‐trip | Total:  1260.8ms | Avg:   0.013µs
+Bincode Encode     | Total:   225.7ms | Avg:   0.002µs
+Bincode Decode     | Total:  1064.8ms | Avg:   0.011µs
+JSON round‑trip    | Total: 51050.1ms | Avg:   0.511µs
+--------------------------------------------------
+Round‑trips        | Total:  1290.5ms | Avg:   0.013µs
 
-// Speed‐ups vs JSON:
-// • Encode faster:       136.90×
-// • Decode faster:       57.20×
-// • Round‐trip faster:   40.34×
+Speed‑ups vs JSON:
+  • Encode faster:      226.20×
+  • Decode faster:      47.94×
+  • Round‑trip faster:  39.56×
 
-// Size Comparison:
-// • Bincode: 4 bytes
-// • JSON:    15 bytes
-// • JSON is 3.75× larger
-// • Bincode saves 73.3%
+Size Comparison:
+  • Bincode: 4 bytes
+  • JSON:    15 bytes
+  • JSON is 3.75× larger
+  • Bincode saves 73.3%
 
-// Total Saved Over All Items:
-// • Bytes: 1,100,000,000
-// • KB:    1074218.75
-// • MB:    1049.04
+Total Saved Over All Items:
+  • Bytes: 1,100,000,000
+  • KB:    1074218.75
+  • MB:    1049.04
 ```
 
 **Note:** As stated in the disclaimer, these specific values depend heavily on the testing environment and the nature of the data.
