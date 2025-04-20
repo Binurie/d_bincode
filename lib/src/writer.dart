@@ -207,7 +207,14 @@ class BincodeWriter implements BincodeWriterBuilder {
   /// writer.position = 0; // come back and fill in the prefix
   /// ```
   @override
-  void seek(int offset) => _pos += offset;
+  void seek(int offset) {
+    final newPos = _pos + offset;
+    if (newPos < 0 || newPos > _capacity) {
+      throw RangeError(
+          'Seeking by $offset from $_pos results in invalid position $newPos for capacity $_capacity');
+    }
+    _pos = newPos;
+  }
 
   /// Returns the current write cursor position (0‑based).
   ///
@@ -231,7 +238,13 @@ class BincodeWriter implements BincodeWriterBuilder {
   /// writer.position = 2;  // next write will go at byte index 2
   /// ```
   @override
-  set position(int v) => _pos = v;
+  set position(int v) {
+    if (v < 0 || v > _capacity) {
+      throw RangeError(
+          'Position $v is out of bounds for buffer capacity $_capacity');
+    }
+    _pos = v;
+  }
 
   /// Reset the write cursor to the start (does **not** clear existing bytes).
   ///
@@ -355,7 +368,7 @@ class BincodeWriter implements BincodeWriterBuilder {
   Future<void> encodeToSink(BincodeCodable value, IOSink sink) async {
     reset();
     value.encode(this);
-    sink.add(_bytes.sublist(0, _length));
+    sink.add(Uint8List.view(_bytes.buffer, _bytes.offsetInBytes, _length));
     await sink.flush();
   }
 
@@ -626,7 +639,9 @@ class BincodeWriter implements BincodeWriterBuilder {
     if (data is Uint8List) {
       _bytes.setRange(_pos, end, data);
     } else {
-      _bytes.setRange(_pos, end, Uint8List.fromList(data));
+      for (int i = 0; i < len; ++i) {
+        _bytes[_pos + i] = data[i];
+      }
     }
     _track(end);
   }
@@ -664,13 +679,62 @@ class BincodeWriter implements BincodeWriterBuilder {
   /// **Layout:** `[utf8...][0 0 ...]` (padded to exactly `len` bytes)
   @override
   void writeFixedString(String s, int len) {
-    final bytes = utf8.encode(s);
     _ensureCapacity(len);
+    final bytes = utf8.encode(s);
     final p = _pos;
     final copyLen = bytes.length < len ? bytes.length : len;
     _bytes.setRange(p, p + copyLen, bytes);
-    if (copyLen < len) _bytes.fillRange(p + copyLen, p + len, 0);
+    if (copyLen < len) {
+      _bytes.fillRange(p + copyLen, p + len, 0);
+    }
     _track(p + len);
+  }
+
+  /// Writes a single Dart character (a String of length 1) as a Rust `char`.
+  ///
+  /// Writes the character's Unicode code point (rune) as a little-endian `u32`.
+  /// This format is compatible with Bincode 1.x and Bincode 2.x legacy/Fixint mode.
+  /// Note: Bincode 2.x default mode uses variable-length UTF-8 for chars.
+  /// Throws [ArgumentError] if [char] is not a single character string.
+  ///
+  /// #### Rust Type: `char`
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Serialize)]
+  /// struct Message { first_initial: char }
+  /// ```
+  /// **Layout:** `[u32 rune]` (little-endian)
+  @override
+  void writeChar(String char) {
+    if (char.length != 1) {
+      throw ArgumentError(
+          'writeChar expects a single character string, got length ${char.length}');
+    }
+    // (Bincode v1 / legacy style)
+    writeU32(char.runes.first);
+  }
+
+  /// Writes an enum discriminant (variant index) as a `u32`.
+  ///
+  /// The caller is responsible for subsequently writing any payload associated
+  /// with the variant. This matches the typical Bincode representation (in Fixint/legacy mode)
+  /// for C-like enums or the discriminant part of enums with data.
+  /// Throws [ArgumentError] if [discriminant] is negative.
+  ///
+  /// #### Rust Type: Part of `enum` serialization
+  /// #### Rust Context Example:
+  /// ```rust
+  /// enum Status { Running, Stopped, Errored = 255 }
+  /// ```
+  /// **Layout:** `[u32 discriminant]` (little-endian)
+  @override
+  void writeEnumDiscriminant(int discriminant) {
+    if (discriminant < 0) {
+      throw ArgumentError(
+          'Enum discriminant cannot be negative: $discriminant');
+    }
+    //  u32 for enum discriminants in Fixint/legacy mode
+    writeU32(discriminant);
   }
 
   // --- Optional Value Writing Methods ---
@@ -937,6 +1001,64 @@ class BincodeWriter implements BincodeWriterBuilder {
     if (value != null) writeFixedString(value, length);
   }
 
+  /// Writes an optional single Dart character [char] as `Option<char>`.
+  ///
+  /// Writes a tag (u8: 0=None, 1=Some) followed by the char (as u32 rune) if present.
+  /// Throws if [char] is non-null and not a single character.
+  ///
+  /// #### Rust Type: `Option<char>`
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Serialize)]
+  /// struct MaybeInitial { initial: Option<char> }
+  /// ```
+  /// **Layout:** `[0]` or `[1][u32 rune]`
+  @override
+  void writeOptionChar(String? char) {
+    writeU8(char != null ? 1 : 0);
+    if (char != null) writeChar(char); // Delegates validation to writeChar
+  }
+
+  /// Writes an optional [Duration] value using the defined format.
+  ///
+  /// Writes a tag (u8: 0=None, 1=Some). If Some, writes the Duration as
+  /// seconds (i64) + positive nanoseconds (u32).
+  ///
+  /// #### Rust Type: `Option<chrono::Duration>` (via serde)
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Serialize)]
+  /// struct Task { estimated_time: Option<chrono::Duration> }
+  /// ```
+  /// **Layout:** `[0]` or `[1][i64 seconds][u32 positive_nanos]`
+  @override
+  void writeOptionDuration(Duration? value) {
+    writeU8(value != null ? 1 : 0);
+    if (value != null) {
+      writeDuration(value);
+    }
+  }
+
+  /// Writes an optional enum discriminant (variant index).
+  ///
+  /// Writes the `u8` tag (0 for None, 1 for Some). If the tag is `1`,
+  /// writes the non-null [discriminant] value as a `u32`.
+  /// This corresponds to writing the discriminant part of an `Option<Enum>`.
+  ///
+  /// #### Rust Type: Part of `Option<Enum>` serialization
+  /// #### Rust Context Example:
+  /// ```rust
+  /// enum MaybeStatus { None, Some(Status) }
+  /// ```
+  /// **Layout:** `[0]` or `[1][u32 discriminant]`
+  @override
+  void writeOptionEnumDiscriminant(int? discriminant) {
+    writeU8(discriminant != null ? 1 : 0);
+    if (discriminant != null) {
+      writeEnumDiscriminant(discriminant);
+    }
+  }
+
   /// Writes a generic list of [values] as a Bincode sequence.
   ///
   /// Writes a U64 length prefix (number of elements) followed by each element
@@ -1004,6 +1126,61 @@ class BincodeWriter implements BincodeWriterBuilder {
       writeKey(entry.key);
       writeValue(entry.value);
     }
+  }
+
+  /// Writes a fixed-size array of elements without a length prefix.
+  ///
+  /// Writes exactly [expectedLength] items sequentially using the [writeElement] callback.
+  /// Asserts that `items.length == expectedLength` before writing.
+  /// This corresponds to serializing Rust's fixed-size array type `[T; N]`.
+  ///
+  /// **Performance Warning:** Performance depends on the complexity of [writeElement].
+  /// For primitive types, writing a `TypedData` list using `writeBytes` might be faster
+  /// if the data is already in that format, but that requires manual length handling.
+  ///
+  /// #### Rust Type: `[T; N]`
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Serialize)]
+  /// struct Header { checksum: [u16; 4] } // N = 4, T = u16
+  /// ```
+  /// **Layout:** `[element 1 bytes][element 2 bytes]...[element N bytes]` (no length prefix)
+  @override
+  void writeFixedArray<T>(
+      List<T> items, int expectedLength, void Function(T value) writeElement) {
+    if (items.length != expectedLength) {
+      throw ArgumentError(
+          'writeFixedArray requires exactly $expectedLength items, but list has ${items.length} items.');
+    }
+    // No length prefix
+    for (final item in items) {
+      writeElement(item);
+    }
+  }
+
+  /// Writes a `Set<T>` as a Bincode sequence (length + elements).
+  ///
+  /// Writes a U64 length prefix (number of elements) followed by each element
+  /// serialized using the provided [writeElement] callback function. The iteration
+  /// order depends on the specific `Set` implementation (usually `LinkedHashSet` in Dart).
+  /// Corresponds to serializing `HashSet<T>` or `BTreeSet<T>` in Rust (which are
+  /// typically serialized identically to `Vec<T>`).
+  ///
+  /// **Performance Warning:** Similar to [writeList], performance depends on the
+  /// number of elements and the complexity of the [writeElement] callback.
+  ///
+  /// #### Rust Type: `HashSet<T>`, `BTreeSet<T>` (Serialized like `Vec<T>`)
+  /// #### Rust Context Example:
+  /// ```rust
+  /// use std::collections::HashSet;
+  /// #[derive(Serialize)]
+  /// struct UniqueIds { ids: HashSet<u64> }
+  /// ```
+  /// **Layout:** `[u64 length][element 1 bytes][element 2 bytes]...`
+  @override
+  void writeSet<T>(Set<T> items, void Function(T value) writeElement) {
+    writeU64(items.length);
+    items.forEach(writeElement);
   }
 
 // --- Specialized List Writers ---
@@ -1315,15 +1492,13 @@ class BincodeWriter implements BincodeWriterBuilder {
   @override
   void writeNestedValueForCollection(BincodeCodable value) {
     final lenPos = _pos;
+    _ensureCapacity(8);
     _pos += 8;
-    final start = _pos;
-
-    value.encode(this); // Serialize directly inline
-
-    final nestedLen = _pos - start;
-    for (var i = 0; i < 8; i++) {
-      _bytes[lenPos + i] = (nestedLen >> (8 * i)) & 0xFF;
-    }
+    final startPayloadPos = _pos;
+    value.encode(this);
+    final endPayloadPos = _pos;
+    final nestedLen = endPayloadPos - startPayloadPos;
+    _dataView!.setUint64(lenPos, nestedLen, Endian.little);
   }
 
   /// Writes a nested value directly into the buffer with **no length prefix**.
@@ -1369,10 +1544,8 @@ class BincodeWriter implements BincodeWriterBuilder {
   /// **Layout:** `[0]` if null, or `[1][len: u64][encoded value]`
   @override
   void writeOptionNestedValueForCollection(BincodeCodable? value) {
-    if (value == null) {
-      writeU8(0);
-    } else {
-      writeU8(1);
+    writeU8(value != null ? 1 : 0);
+    if (value != null) {
       writeNestedValueForCollection(value);
     }
   }
@@ -1395,11 +1568,40 @@ class BincodeWriter implements BincodeWriterBuilder {
   /// **Layout:** `[0]` if null, or `[1][encoded struct bytes]`
   @override
   void writeOptionNestedValueForFixed(BincodeEncodable? value) {
-    if (value == null) {
-      writeU8(0);
-    } else {
-      writeU8(1);
+    writeU8(value != null ? 1 : 0);
+    if (value != null) {
       writeNestedValueForFixed(value);
     }
+  }
+
+  /// Writes a [Duration] value using a defined format compatible with Rust's `chrono::Duration`.
+  ///
+  /// Serializes as two components:
+  /// 1. Seconds as a little-endian signed 64-bit integer (`i64`).
+  /// 2. Nanoseconds within the second as a little-endian unsigned 32-bit integer (`u32`),
+  ///    always positive and less than 1,000,000,000.
+  /// This handles positive and negative durations correctly.
+  ///
+  /// #### Rust Type: `chrono::Duration` (via serde)
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Serialize)]
+  /// struct Timer { elapsed: chrono::Duration }
+  /// ```
+  /// **Layout:** `[i64 seconds][u32 positive_nanos]` (little-endian)
+  @override
+  void writeDuration(Duration value) {
+    int totalNanos = value.inMicroseconds * 1000;
+    const nanosPerSecond = 1000000000;
+    int seconds = totalNanos ~/ nanosPerSecond;
+    int nanos = totalNanos.remainder(nanosPerSecond);
+
+    if (nanos < 0) {
+      nanos += nanosPerSecond;
+      seconds -= 1;
+    }
+
+    writeI64(seconds);
+    writeU32(nanos);
   }
 }

@@ -374,6 +374,7 @@ class BincodeReader implements BincodeReaderBuilder {
   /// ```dart
   /// print('Remaining: ${reader.remainingBytes} bytes');
   /// ```
+  @override
   int get remainingBytes => _bytes.lengthInBytes - _pos;
 
   /// Returns true if the current read position is aligned to [alignment] bytes.
@@ -908,6 +909,32 @@ class BincodeReader implements BincodeReaderBuilder {
     return utf8.decode(readRawBytes(length));
   }
 
+  /// Reads a Rust `char` (encoded as u32 for Bincode v1/legacy) and returns it as a single-character Dart String.
+  ///
+  /// Reads 4 bytes from the current position, interprets them as a little-endian `u32`
+  /// representing a Unicode code point, and returns the corresponding character.
+  /// Advances the cursor by 4 bytes. Throws if the decoded code point is invalid
+  /// (e.g., a surrogate pair code point).
+  ///
+  /// #### Rust Type: `char`
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Message { first_initial: char }
+  /// ```
+  /// **Layout:** `[u32 rune]` (little-endian)
+  @override
+  String readChar() {
+    final rune = readU32();
+
+    if (rune < 0 || rune > 0x10FFFF || (rune >= 0xD800 && rune <= 0xDFFF)) {
+      throw BincodeException(
+          'Invalid Unicode code point read for char: $rune (0x${rune.toRadixString(16)})');
+    }
+
+    return String.fromCharCode(rune);
+  }
+
   /// Reads a fixed-length string of [length] bytes, and removes null padding.
   ///
   /// 1. Reads [length] bytes as UTF-8.
@@ -1144,6 +1171,21 @@ class BincodeReader implements BincodeReaderBuilder {
   String? readOptionFixedString(int length) =>
       _readTagged(() => readFixedString(length));
 
+  /// Reads an optional Rust `char` (encoded as u32 for Bincode v1/legacy).
+  ///
+  /// Reads the tag (u8). If 1, reads the `u32` rune and returns the character String.
+  /// If 0, returns null. Throws on invalid tag or invalid rune.
+  ///
+  /// #### Rust Type: `Option<char>`
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct MaybeInitial { initial: Option<char> }
+  /// ```
+  /// **Layout:** `[0]` or `[1][u32 rune]`
+  @override
+  String? readOptionChar() => _readTagged(readChar);
+
   /// Reads an optional fixed-length UTF‑8 string and strips null padding.
   ///
   /// Useful for padded fields like `[u8; 16]` where content may be shorter.
@@ -1160,6 +1202,42 @@ class BincodeReader implements BincodeReaderBuilder {
   @override
   String? readCleanOptionFixedString(int length) =>
       _readTagged(() => readFixedString(length).replaceAll('\x00', ''));
+
+  /// Reads an optional [Duration] value using the defined format.
+  ///
+  /// Reads the tag (u8). If 1, reads the Duration as seconds (i64) + positive nanos (u32).
+  /// If 0, returns null. Throws on invalid tag or invalid Duration format.
+  ///
+  /// #### Rust Type: `Option<chrono::Duration>` (via serde)
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Task { estimated_time: Option<chrono::Duration> }
+  /// ```
+  /// **Layout:** `[0]` or `[1][i64 seconds][u32 positive_nanos]`
+  @override
+  Duration? readOptionDuration() {
+    return _readTagged(readDuration);
+  }
+
+  /// Reads an optional enum discriminant (variant index).
+  ///
+  /// Reads the `u8` tag. If the tag is `1`, reads the `u32` discriminant and returns it.
+  /// If the tag is `0`, returns `null`. Throws [InvalidOptionTagException] for other tag values.
+  /// This corresponds to reading the discriminant part of an `Option<Enum>`.
+  ///
+  /// #### Rust Type: Part of `Option<Enum>` deserialization
+  /// #### Rust Context Example:
+  /// ```rust
+  /// enum MaybeStatus { None, Some(Status) }
+  /// let opt_discriminant = reader.read_option_enum_discriminant(); // Reads tag + Option<u32>
+  /// // Based on result, might read Status payload
+  /// ```
+  /// **Layout:** `[0]` or `[1][u32 discriminant]`
+  @override
+  int? readOptionEnumDiscriminant() {
+    return _readTagged(readEnumDiscriminant);
+  }
 
   // ── Collections ──────────────────────────────────────────────────────────
 
@@ -1191,6 +1269,10 @@ class BincodeReader implements BincodeReaderBuilder {
   @override
   List<T> readList<T>(T Function() readElement) {
     final length = readU64();
+    if (length > 0 && remainingBytes < length) {
+      // Heuristic check
+      _check(length);
+    }
     return List<T>.generate(length, (_) => readElement(), growable: false);
   }
 
@@ -1227,7 +1309,58 @@ class BincodeReader implements BincodeReaderBuilder {
     final length = readU64();
     final result = <K, V>{};
     for (var i = 0; i < length; i++) {
-      result[readKey()] = readValue();
+      final K key = readKey();
+      final V value = readValue();
+      result[key] = value;
+    }
+    return result;
+  }
+
+  /// Reads a fixed-size array of elements without a length prefix.
+  ///
+  /// Reads exactly [length] items sequentially using the [readElement] callback.
+  /// Corresponds to deserializing Rust's fixed-size array type `[T; N]`.
+  ///
+  /// #### Rust Type: `[T; N]`
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Header { checksum: [u16; 4] } // N = 4, T = u16
+  /// ```
+  /// **Layout:** `[element 1 bytes][element 2 bytes]...[element N bytes]` (no length prefix)
+  @override
+  List<T> readFixedArray<T>(int length, T Function() readElement) {
+    if (length < 0) {
+      throw BincodeException(
+          "Cannot read fixed array with negative length: $length");
+    }
+    return List<T>.generate(length, (_) => readElement(), growable: false);
+  }
+
+  /// Reads a `Set<T>` from a Bincode sequence (length + elements).
+  ///
+  /// Reads a U64 length prefix, then reads that many elements using the
+  /// [readElement] callback, adding them to the returned `Set<T>`.
+  /// Corresponds to deserializing Rust's `HashSet<T>` or `BTreeSet<T>` (which
+  /// are typically serialized identically to `Vec<T>`).
+  ///
+  /// **Performance Warning:** Similar to [readList], performance depends on the
+  /// number of elements and the complexity of the [readElement] callback.
+  ///
+  /// #### Rust Type: `HashSet<T>`, `BTreeSet<T>` (Deserialized from `Vec<T>` format)
+  /// #### Rust Context Example:
+  /// ```rust
+  /// use std::collections::HashSet;
+  /// #[derive(Deserialize)]
+  /// struct UniqueIds { ids: HashSet<u64> }
+  /// ```
+  /// **Layout:** `[u64 length][element 1 bytes][element 2 bytes]...`
+  @override
+  Set<T> readSet<T>(T Function() readElement) {
+    final length = readU64();
+    final Set<T> result = {};
+    for (int i = 0; i < length; i++) {
+      result.add(readElement());
     }
     return result;
   }
@@ -1258,14 +1391,7 @@ class BincodeReader implements BincodeReaderBuilder {
   @pragma('vm:prefer-inline')
   Uint8List readUint8List() {
     final length = readU64();
-    _check(length);
-    final p = _pos;
-    _pos = p + length;
-    return Uint8List.view(
-      _bytes.buffer,
-      _bytes.offsetInBytes + p,
-      length,
-    );
+    return readRawBytes(length);
   }
 
   /// Reads a `Vec<i8>` as `[u64 length][i8, i8, ...]`.
@@ -1323,20 +1449,12 @@ class BincodeReader implements BincodeReaderBuilder {
     _pos = p + byteCount;
 
     if ((offset & 1) == 0) {
-      return Uint16List.view(
-        _bytes.buffer,
-        offset,
-        length,
-      );
+      return Uint16List.view(_bytes.buffer, offset, length);
     } else {
+      final dataView = ByteData.view(_bytes.buffer, offset, byteCount);
       final list = Uint16List(length);
-      final data = ByteData.view(
-        _bytes.buffer,
-        offset,
-        byteCount,
-      );
       for (var i = 0; i < length; i++) {
-        list[i] = data.getUint16(i * 2, Endian.little);
+        list[i] = dataView.getUint16(i * 2, Endian.little);
       }
       return list;
     }
@@ -1365,20 +1483,18 @@ class BincodeReader implements BincodeReaderBuilder {
     _check(byteCount);
     final p = _pos;
     final offsetBytes = _bytes.offsetInBytes + p;
+    _pos = p + byteCount;
 
     if ((offsetBytes & 3) == 0) {
-      _pos = p + byteCount;
-      return Uint32List.view(
-        _bytes.buffer,
-        offsetBytes,
-        length,
-      );
+      return Uint32List.view(_bytes.buffer, offsetBytes, length);
     } else {
-      return List<int>.generate(
-        length,
-        (_) => readU32(),
-        growable: false,
-      );
+      // Unaligned
+      final dataView = ByteData.view(_bytes.buffer, offsetBytes, byteCount);
+      final list = List<int>.filled(length, 0, growable: false);
+      for (int i = 0; i < length; ++i) {
+        list[i] = dataView.getUint32(i * 4, Endian.little);
+      }
+      return list;
     }
   }
 
@@ -1406,20 +1522,18 @@ class BincodeReader implements BincodeReaderBuilder {
     _check(byteCount);
     final p = _pos;
     final offset = _bytes.offsetInBytes + p;
+    _pos = p + byteCount;
 
     if ((offset & 3) == 0) {
-      _pos = p + byteCount;
-      return Float32List.view(
-        _bytes.buffer,
-        offset,
-        length,
-      );
+      return Float32List.view(_bytes.buffer, offset, length);
     } else {
-      return List<double>.generate(
-        length,
-        (_) => readF32(),
-        growable: false,
-      );
+      // Unaligned
+      final dataView = ByteData.view(_bytes.buffer, offset, byteCount);
+      final list = Float32List(length);
+      for (var i = 0; i < length; i++) {
+        list[i] = dataView.getFloat32(i * 4, Endian.little);
+      }
+      return list;
     }
   }
 
@@ -1447,20 +1561,18 @@ class BincodeReader implements BincodeReaderBuilder {
     _check(byteCount);
     final p = _pos;
     final offsetBytes = _bytes.offsetInBytes + p;
+    _pos = p + byteCount;
 
     if ((offsetBytes & 7) == 0) {
-      _pos = p + byteCount;
-      return Float64List.view(
-        _bytes.buffer,
-        offsetBytes,
-        length,
-      );
+      return Float64List.view(_bytes.buffer, offsetBytes, length);
     } else {
-      return List<double>.generate(
-        length,
-        (_) => readF64(),
-        growable: false,
-      );
+      // Unaligned
+      final dataView = ByteData.view(_bytes.buffer, offsetBytes, byteCount);
+      final list = Float64List(length);
+      for (var i = 0; i < length; i++) {
+        list[i] = dataView.getFloat64(i * 8, Endian.little);
+      }
+      return list;
     }
   }
 
@@ -1487,20 +1599,18 @@ class BincodeReader implements BincodeReaderBuilder {
     _check(byteCount);
     final p = _pos;
     final offset = _bytes.offsetInBytes + p;
+    _pos = p + byteCount;
 
     if ((offset & 1) == 0) {
-      _pos = p + byteCount;
-      return Int16List.view(
-        _bytes.buffer,
-        offset,
-        length,
-      );
+      return Int16List.view(_bytes.buffer, offset, length);
     } else {
-      return List<int>.generate(
-        length,
-        (_) => readI16(),
-        growable: false,
-      );
+      // Unaligned
+      final dataView = ByteData.view(_bytes.buffer, offset, byteCount);
+      final list = Int16List(length);
+      for (var i = 0; i < length; i++) {
+        list[i] = dataView.getInt16(i * 2, Endian.little);
+      }
+      return list;
     }
   }
 
@@ -1527,20 +1637,18 @@ class BincodeReader implements BincodeReaderBuilder {
     _check(byteCount);
     final p = _pos;
     final offsetBytes = _bytes.offsetInBytes + p;
+    _pos = p + byteCount;
 
     if ((offsetBytes & 3) == 0) {
-      _pos = p + byteCount;
-      return Int32List.view(
-        _bytes.buffer,
-        offsetBytes,
-        length,
-      );
+      return Int32List.view(_bytes.buffer, offsetBytes, length);
     } else {
-      return List<int>.generate(
-        length,
-        (_) => readI32(),
-        growable: false,
-      );
+      // Unaligned
+      final dataView = ByteData.view(_bytes.buffer, offsetBytes, byteCount);
+      final list = Int32List(length);
+      for (var i = 0; i < length; i++) {
+        list[i] = dataView.getInt32(i * 4, Endian.little);
+      }
+      return list;
     }
   }
 
@@ -1564,24 +1672,22 @@ class BincodeReader implements BincodeReaderBuilder {
   @pragma('vm:prefer-inline')
   List<int> readInt64List() {
     final length = readU64();
-    final byteCount = length * 4;
+    final byteCount = length * 8;
     _check(byteCount);
     final p = _pos;
     final offsetBytes = _bytes.offsetInBytes + p;
+    _pos = p + byteCount;
 
     if ((offsetBytes & 7) == 0) {
-      _pos = p + byteCount;
-      return Int64List.view(
-        _bytes.buffer,
-        offsetBytes,
-        length,
-      );
+      return Int64List.view(_bytes.buffer, offsetBytes, length);
     } else {
-      return List<int>.generate(
-        length,
-        (_) => readI64(),
-        growable: false,
-      );
+      // Unaligned
+      final dataView = ByteData.view(_bytes.buffer, offsetBytes, byteCount);
+      final list = Int64List(length);
+      for (var i = 0; i < length; i++) {
+        list[i] = dataView.getInt64(i * 8, Endian.little);
+      }
+      return list;
     }
   }
 
@@ -1600,33 +1706,29 @@ class BincodeReader implements BincodeReaderBuilder {
   /// ```
   ///
   /// **Layout:** `[u64 length][u64 * length]`
-
   @override
   @pragma('vm:prefer-inline')
   List<int> readUint64List() {
     final length = readU64();
-    final byteCount = length * 4;
+    final byteCount = length * 8;
     _check(byteCount);
     final p = _pos;
     final offsetBytes = _bytes.offsetInBytes + p;
+    _pos = p + byteCount;
 
     if ((offsetBytes & 7) == 0) {
-      _pos = p + byteCount;
-      return Uint64List.view(
-        _bytes.buffer,
-        offsetBytes,
-        length,
-      );
+      return Uint64List.view(_bytes.buffer, offsetBytes, length);
     } else {
-      return List<int>.generate(
-        length,
-        (_) => readU64(),
-        growable: false,
-      );
+      // Unaligned
+      final dataView = ByteData.view(_bytes.buffer, offsetBytes, byteCount);
+      final list = Uint64List(length);
+      for (var i = 0; i < length; i++) {
+        list[i] = dataView.getUint64(i * 8, Endian.little);
+      }
+      return list;
     }
   }
 
-  @override
   Uint8List toBytes() => _bytes.buffer.asUint8List();
 
   // ── Nested Objects ───────────────────────────────────────────────────────
@@ -1819,5 +1921,50 @@ class BincodeReader implements BincodeReaderBuilder {
     _tmpWriter.rewind();
     instance.encode(_tmpWriter);
     return _tmpWriter.getBytesWritten();
+  }
+
+  /// Reads a [Duration] value using the defined format compatible with Rust's `chrono::Duration`.
+  ///
+  /// Reads seconds (`i64`) and positive nanoseconds within the second (`u32`)
+  /// and reconstructs a Dart `Duration` object.
+  ///
+  /// #### Rust Type: `chrono::Duration` (via serde)
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Deserialize)]
+  /// struct Timer { elapsed: chrono::Duration }
+  /// ```
+  /// **Layout:** `[i64 seconds][u32 positive_nanos]` (little-endian)
+  @override
+  Duration readDuration() {
+    final seconds = readI64();
+    final nanoseconds = readU32();
+
+    if (nanoseconds >= 1000000000) {
+      throw BincodeException(
+          'Invalid nanosecond value read for Duration: $nanoseconds');
+    }
+
+    final totalMicroseconds = (seconds * 1000000) + (nanoseconds ~/ 1000);
+
+    return Duration(microseconds: totalMicroseconds);
+  }
+
+  /// Reads an enum discriminant (variant index) encoded as a `u32`.
+  ///
+  /// The caller is responsible for subsequently reading any payload based on the
+  /// returned discriminant. Matches Bincode Fixint/legacy mode.
+  ///
+  /// #### Rust Type: Part of `enum` deserialization
+  /// #### Rust Context Example:
+  /// ```rust
+  /// enum Status { Running, Stopped, Errored = 255 }
+  /// let discriminant = reader.read_enum_discriminant(); // Reads 0, 1, or 255 (as u32)
+  /// ```
+  /// **Layout:** `[u32 discriminant]` (little-endian)
+  @override
+  int readEnumDiscriminant() {
+    // Format: u32 index
+    return readU32();
   }
 }

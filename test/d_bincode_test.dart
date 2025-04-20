@@ -1,3 +1,5 @@
+// ignore_for_file: unused_local_variable
+
 // Copyright (c) 2025 Binurie
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -23,7 +25,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:collection/collection.dart';
 import 'package:d_bincode/d_bincode.dart';
+import 'package:d_bincode/src/exception/exception.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -165,6 +169,19 @@ void main() {
       test('peek methods do not change position', peekMethodsTest);
       test('skipOption skips over optional values', skipOptionTest);
     });
+
+    test('Char read/write', charTest);
+    test('Fixed Array read/write', fixedArrayTest);
+    test('Set read/write', setTest);
+    test('Enum Discriminant read/write', enumDiscriminantTest);
+    test('Duration read/write', durationTest);
+
+    test('Reader Error Handling', readerErrorTests);
+    test('List Alignment Fallback', alignmentFallbackTest);
+    test('Float Special Values (NaN, Infinity)', floatSpecialValuesTest);
+    test('Nested Variable-Size Collection read/write', nestedCollectionTest);
+    test('List with Optional Elements & Optional List', listOptionalTest);
+    test('Empty Buffer Reading', emptyBufferTest);
   });
 }
 
@@ -1951,4 +1968,394 @@ void skipOptionTest() {
 
   reader3.skipOption(() {});
   expect(reader3.position, greaterThan(initialPos));
+}
+
+void charTest() {
+  final writer = BincodeWriter();
+  const char1 = 'A';
+  const char2 = '€';
+  const String? char3 = null;
+  const String char4 = 'z';
+
+  writer.writeChar(char1);
+  writer.writeChar(char2);
+  writer.writeOptionChar(char3);
+  writer.writeOptionChar(char4);
+
+  final reader = BincodeReader(writer.toBytes());
+
+  expect(reader.readChar(), equals(char1));
+  expect(reader.readChar(), equals(char2));
+  expect(reader.readOptionChar(), isNull);
+  expect(reader.readOptionChar(), equals(char4));
+  expect(reader.remainingBytes, isZero);
+
+  expect(() => writer.writeChar(''), throwsArgumentError);
+  expect(() => writer.writeChar('AB'), throwsArgumentError);
+  expect(() => writer.writeOptionChar('BC'), throwsArgumentError);
+}
+
+void fixedArrayTest() {
+  final writer = BincodeWriter();
+  final List<int> array1 = [10, 20, 30];
+  final List<String> array2 = ["a", "b"];
+  final List<int> arrayEmpty = [];
+
+  writer.writeFixedArray<int>(array1, 3, writer.writeU16);
+  writer.writeFixedArray<String>(array2, 2, writer.writeString);
+  writer.writeFixedArray<int>(arrayEmpty, 0, writer.writeU8);
+
+  final reader = BincodeReader(writer.toBytes());
+
+  final readArray1 = reader.readFixedArray<int>(3, reader.readU16);
+  final readArray2 = reader.readFixedArray<String>(2, reader.readString);
+  final readArrayEmpty = reader.readFixedArray<int>(0, reader.readU8);
+
+  expect(ListEquality().equals(readArray1, array1), isTrue);
+  expect(ListEquality().equals(readArray2, array2), isTrue);
+  expect(readArrayEmpty, isEmpty);
+  expect(reader.remainingBytes, isZero);
+
+  expect(() => writer.writeFixedArray([1], 2, writer.writeU8),
+      throwsArgumentError);
+}
+
+void setTest() {
+  final writer = BincodeWriter();
+  final Set<String> set1 = {'apple', 'banana', 'cherry'};
+  final Set<int> set2 = {1, -10, 100};
+  final Set<int> setEmpty = {};
+
+  writer.writeSet<String>(set1, writer.writeString);
+  writer.writeSet<int>(set2, writer.writeI32);
+  writer.writeSet<int>(setEmpty, writer.writeU8);
+
+  final reader = BincodeReader(writer.toBytes());
+
+  final readSet1 = reader.readSet<String>(reader.readString);
+  final readSet2 = reader.readSet<int>(reader.readI32);
+  final readSetEmpty = reader.readSet<int>(reader.readU8);
+
+  expect(SetEquality().equals(readSet1, set1), isTrue);
+  expect(SetEquality().equals(readSet2, set2), isTrue);
+  expect(readSetEmpty, isEmpty);
+  expect(reader.remainingBytes, isZero);
+}
+
+void enumDiscriminantTest() {
+  final writer = BincodeWriter();
+  const d1 = 0;
+  const d2 = 1;
+  const d3 = 255;
+  const d4 = 0xFFFFFFFF;
+
+  writer.writeEnumDiscriminant(d1);
+  writer.writeEnumDiscriminant(d2);
+  writer.writeEnumDiscriminant(d3);
+  writer.writeEnumDiscriminant(d4);
+
+  final reader = BincodeReader(writer.toBytes());
+
+  expect(reader.readEnumDiscriminant(), equals(d1));
+  expect(reader.readEnumDiscriminant(), equals(d2));
+  expect(reader.readEnumDiscriminant(), equals(d3));
+  expect(reader.readEnumDiscriminant(), equals(d4));
+  expect(reader.remainingBytes, isZero);
+
+  expect(() => writer.writeEnumDiscriminant(-1), throwsArgumentError);
+}
+
+void durationTest() {
+  final writer = BincodeWriter();
+
+  final v1 = Duration.zero;
+  final v2 = Duration(
+      days: 2,
+      hours: 3,
+      minutes: 4,
+      seconds: 5,
+      milliseconds: 6,
+      microseconds: 7);
+  final v3 = Duration(seconds: 10, microseconds: 123456);
+  final v4 = Duration(microseconds: 1);
+  final v5 = Duration(seconds: -5, microseconds: -123456);
+  final Duration? v6 = null;
+  final Duration v7 = v2;
+
+  writer.writeDuration(v1);
+  writer.writeDuration(v2);
+  writer.writeDuration(v3);
+  writer.writeDuration(v4);
+  writer.writeDuration(v5);
+  writer.writeOptionDuration(v6);
+  writer.writeOptionDuration(v7);
+
+  final reader = BincodeReader(writer.toBytes());
+
+  expect(reader.readDuration(), equals(v1));
+  expect(reader.readDuration(), equals(v2));
+  expect(reader.readDuration(), equals(v3));
+  expect(reader.readDuration(), equals(v4));
+  expect(reader.readDuration(), equals(v5));
+  expect(reader.readOptionDuration(), isNull);
+  expect(reader.readOptionDuration(), equals(v7));
+  expect(reader.remainingBytes, isZero);
+}
+
+class NestedData implements BincodeCodable {
+  int nestedId = 0;
+  String nestedName = "Default Nested";
+
+  NestedData();
+  NestedData.create(this.nestedId, this.nestedName);
+
+  @override
+  void encode(BincodeWriter w) {
+    w.writeI32(nestedId);
+    w.writeString(nestedName);
+  }
+
+  @override
+  void decode(BincodeReader r) {
+    nestedId = r.readI32();
+    nestedName = r.readString();
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is NestedData &&
+      nestedId == other.nestedId &&
+      nestedName == other.nestedName;
+  @override
+  int get hashCode => nestedId.hashCode ^ nestedName.hashCode;
+  @override
+  String toString() => 'NestedData(id: $nestedId, name: "$nestedName")';
+}
+
+class FixedStruct implements BincodeCodable {
+  int valueA = 0;
+  double valueB = 0.0;
+  bool flagC = false;
+  FixedStruct();
+  FixedStruct.create(this.valueA, this.valueB, this.flagC);
+  @override
+  void encode(BincodeWriter w) {
+    w.writeI32(valueA);
+    w.writeF64(valueB);
+    w.writeBool(flagC);
+  }
+
+  @override
+  void decode(BincodeReader r) {
+    valueA = r.readI32();
+    valueB = r.readF64();
+    flagC = r.readBool();
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is FixedStruct &&
+      valueA == other.valueA &&
+      valueB == other.valueB &&
+      flagC == other.flagC;
+  @override
+  int get hashCode => valueA.hashCode ^ valueB.hashCode ^ flagC.hashCode;
+  @override
+  String toString() => 'Fixed(A:$valueA, B:$valueB, C:$flagC)';
+}
+
+void readerErrorTests() {
+  final writer1 = BincodeWriter();
+  writer1.writeU16(1);
+  final reader1 = BincodeReader(writer1.toBytes());
+  expect(() => reader1.readU32(), throwsA(isA<RangeError>()),
+      reason: "Reading U32 from 2 bytes should fail");
+
+  final reader2 = BincodeReader(Uint8List.fromList([1, 2, 3]));
+  expect(() => reader2.seek(4), throwsA(isA<RangeError>()));
+  expect(() => reader2.seekTo(4), throwsA(isA<RangeError>()));
+  expect(() => reader2.position = 4, throwsA(isA<RangeError>()));
+
+  final writer3 = BincodeWriter();
+  writer3.writeU8(2);
+  final reader3 = BincodeReader(writer3.toBytes());
+  expect(() => reader3.readBool(), throwsA(isA<InvalidBooleanValueException>()),
+      reason: "Reading bool value '2' should fail");
+
+  final writer4 = BincodeWriter();
+  writer4.writeU8(2);
+  writer4.writeU8(99);
+  final reader4 = BincodeReader(writer4.toBytes());
+  expect(
+      () => reader4.readOptionU8(), throwsA(isA<InvalidOptionTagException>()),
+      reason: "Reading Option tag '2' should fail");
+
+  final writer5 = BincodeWriter();
+  writer5.writeU32(0xD800);
+  final reader5 = BincodeReader(writer5.toBytes());
+  expect(() => reader5.readChar(), throwsA(isA<BincodeException>()),
+      reason: "Reading invalid char code point should fail");
+}
+
+void alignmentFallbackTest() {
+  final writer = BincodeWriter();
+
+  final List<int> values = [100, 200, 300];
+  writer.writeU64(values.length);
+  values.forEach(writer.writeU32);
+  final bytes = writer.toBytes();
+
+  final paddedBytes = Uint8List(bytes.length + 1);
+  paddedBytes.setRange(1, bytes.length + 1, bytes);
+  paddedBytes[0] = 0xAA;
+
+  final reader = BincodeReader(paddedBytes);
+  reader.seek(1);
+
+  expect(reader.isAligned(4), isFalse,
+      reason: "Reader should be unaligned for U32 at position 1");
+
+  final List<int> readValues = reader.readUint32List();
+
+  expect(ListEquality().equals(readValues, values), isTrue,
+      reason: "Fallback readUint32List should return correct values");
+  expect(reader.position, equals(bytes.length + 1),
+      reason: "Reader should be at end after reading list");
+}
+
+void floatSpecialValuesTest() {
+  final writer = BincodeWriter();
+
+  writer.writeF64(double.nan);
+  writer.writeF64(double.infinity);
+  writer.writeF64(double.negativeInfinity);
+  writer.writeOptionF64(double.nan);
+  writer.writeOptionF64(double.infinity);
+  writer.writeOptionF64(null);
+
+  writer.writeF32(double.nan.toFloat32());
+  writer.writeF32(double.infinity.toFloat32());
+  writer.writeF32(double.negativeInfinity.toFloat32());
+  writer.writeOptionF32(double.negativeInfinity.toFloat32());
+  writer.writeOptionF32(null);
+
+  final reader = BincodeReader(writer.toBytes());
+
+  final rNan64 = reader.readF64();
+  final rInf64 = reader.readF64();
+  final rNegInf64 = reader.readF64();
+  final rOptNan64 = reader.readOptionF64();
+  final rOptInf64 = reader.readOptionF64();
+  final rOptNull64 = reader.readOptionF64();
+
+  expect(rNan64.isNaN, isTrue, reason: "Read F64 NaN");
+  expect(rInf64.isInfinite && !rInf64.isNegative, isTrue,
+      reason: "Read F64 Infinity");
+  expect(rNegInf64.isInfinite && rNegInf64.isNegative, isTrue,
+      reason: "Read F64 NegativeInfinity");
+  expect(rOptNan64?.isNaN ?? false, isTrue, reason: "Read Option F64 NaN");
+  expect(rOptInf64?.isInfinite ?? false, isTrue,
+      reason: "Read Option F64 Infinity");
+  expect(rOptNull64, isNull, reason: "Read Option F64 Null");
+
+  final rNan32 = reader.readF32();
+  final rInf32 = reader.readF32();
+  final rNegInf32 = reader.readF32();
+  final rOptNegInf32 = reader.readOptionF32();
+  final rOptNull32 = reader.readOptionF32();
+
+  expect(rNan32.isNaN, isTrue, reason: "Read F32 NaN");
+  expect(rInf32.isInfinite && !rInf32.isNegative, isTrue,
+      reason: "Read F32 Infinity");
+  expect(rNegInf32.isInfinite && rNegInf32.isNegative, isTrue,
+      reason: "Read F32 NegativeInfinity");
+  expect(rOptNegInf32?.isInfinite ?? false, isTrue,
+      reason: "Read Option F32 NegativeInfinity");
+  expect(rOptNull32, isNull, reason: "Read Option F32 Null");
+
+  expect(reader.remainingBytes, isZero);
+}
+
+extension Float32Converter on double {
+  double toFloat32() {
+    final buffer = ByteData(4);
+    buffer.setFloat32(0, this, Endian.host);
+    return buffer.getFloat32(0, Endian.host);
+  }
+}
+
+void nestedCollectionTest() {
+  final writer = BincodeWriter();
+  final d1 = NestedData.create(101, "Variable Size");
+  final d2 = NestedData.create(202, "Another");
+  final NestedData? d3 = null;
+  final d4 = NestedData.create(404, "Last");
+  final List<NestedData> listNested = [d1, d2];
+
+  writer.writeNestedValueForCollection(d1);
+  writer.writeOptionNestedValueForCollection(d2);
+  writer.writeOptionNestedValueForCollection(d3);
+  writer.writeList<NestedData>(
+      listNested, (item) => writer.writeNestedValueForCollection(item));
+
+  final reader = BincodeReader(writer.toBytes());
+
+  final r1 = reader.readNestedObjectForCollection(NestedData());
+  final r2 = reader.readOptionNestedObjectForCollection(() => NestedData());
+  final r3 = reader.readOptionNestedObjectForCollection(() => NestedData());
+  final rList = reader.readList<NestedData>(
+      () => reader.readNestedObjectForCollection(NestedData()));
+
+  expect(r1, equals(d1));
+  expect(r2, equals(d2));
+  expect(r3, isNull);
+  expect(ListEquality().equals(rList, listNested), isTrue);
+  expect(reader.remainingBytes, isZero);
+}
+
+void listOptionalTest() {
+  final writer = BincodeWriter();
+  final List<int?> listWithNulls = [1, null, 3, null, 5];
+  final List<String>? nullList = null;
+  final List<String> presentList = ["a", "b"];
+
+  writer.writeList<int?>(listWithNulls, writer.writeOptionU8);
+
+  writer.writeU8(0);
+
+  writer.writeU8(1);
+  writer.writeList<String>(presentList, writer.writeString);
+
+  final reader = BincodeReader(writer.toBytes());
+
+  final readListWithNulls = reader.readList<int?>(reader.readOptionU8);
+  expect(ListEquality().equals(readListWithNulls, listWithNulls), isTrue);
+
+  List<String>? readNullList;
+  final tag1 = reader.readU8();
+  if (tag1 == 1) {
+    readNullList = reader.readList<String>(reader.readString);
+  }
+  expect(tag1, equals(0));
+  expect(readNullList, isNull);
+
+  List<String>? readPresentList;
+  final tag2 = reader.readU8();
+  if (tag2 == 1) {
+    readPresentList = reader.readList<String>(reader.readString);
+  }
+  expect(tag2, equals(1));
+  expect(ListEquality().equals(readPresentList, presentList), isTrue);
+
+  expect(reader.remainingBytes, isZero);
+}
+
+void emptyBufferTest() {
+  final reader = BincodeReader(Uint8List(0));
+
+  expect(reader.remainingBytes, isZero);
+  expect(reader.position, isZero);
+  expect(() => reader.readU8(), throwsA(isA<RangeError>()));
+  expect(() => reader.readU64(), throwsA(isA<RangeError>()));
+  expect(() => reader.seek(1), throwsA(isA<RangeError>()));
 }
