@@ -258,6 +258,55 @@ class Outer implements BincodeCodable {
 
 **Disclaimer:** The following benchmark results are provided for illustrative purposes only. Actual performance may vary significantly depending on the specific data structures being serialized, the hardware used, the Dart VM version, overall system load, and other factors. These figures do not constitute a guarantee of performance in your specific application. Always benchmark within your own use case.
 
+### MyData Class Example
+
+Results are from code/encode the example MyData with Bincode vs Json vs Protobuf via benchmark_harness package.
+
+Json was generated via json_serializable.
+
+Protobuf via protoc cmd generate command.
+
+Bincode from d_bincode like in the example.
+
+```text
+
+Data Setup & Initial Serialization:
+  Bincode Initial Encode took: 0.01 ms
+  JSON Initial Encode took:    0.06 ms
+  Protobuf Initial Encode took:0.10 ms (includes Dart->Proto conversion)
+
+Serialized Size:
+  Bincode:  670.0 bytes
+  JSON:     1679.0 bytes
+  Protobuf: 582.0 bytes
+  Size Ratios (vs Bincode): JSON: 2.51x | Protobuf: 0.87x
+  Size Ratio (JSON / Protobuf): 2.88x
+----------------------------------------------------------------------
+Running Benchmarks (Average time per operation)...
+
+Benchmark Results:
+======================================================================
+ ENCODING (Object -> Bytes)
+----------------------------------------------------------------------
+  Bincode:  14.53 µs     / op  |  Ops/sec:      68820
+  JSON:     235.24 µs    / op  |  Ops/sec:       4251
+  Protobuf: 59.92 µs     / op  |  Ops/sec:      16688
+----------------------------------------------------------------------
+  Ratios (vs Bincode): JSON: 16.19x | Protobuf: 4.12x
+  Ratio (JSON / Protobuf): 3.93x
+----------------------------------------------------------------------
+ DECODING (Bytes -> Object)
+----------------------------------------------------------------------
+  Bincode:  20.13 µs     / op  |  Ops/sec:      49667
+  JSON:     180.22 µs    / op  |  Ops/sec:       5549
+  Protobuf: 59.99 µs     / op  |  Ops/sec:      16670
+----------------------------------------------------------------------
+  Ratios (vs Bincode): JSON: 8.95x | Protobuf: 2.98x
+  Ratio (JSON / Protobuf): 3.00x
+======================================================================
+
+```
+
 ### Complex Nested Data Test
 
 Results from serializing/deserializing a complex, multi-level nested object 5 million times:
