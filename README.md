@@ -10,7 +10,7 @@ Currently only fixed int encoding/decoding supported in 2.x of rust bincode.
 let config = config::standard().with_fixed_int_encoding(); // <<< this is key in 2.x
 ```
 
-Dart implementation of the Bincode binary format. Manual BincodeCodable implementation is currently required, providing control but demanding more setup. You can use the Rust to Dart Bincode [Converter](https://rust-to-dart-bincode-converter.netlify.app/) for simple Structs. It creates an dart class with BincodeCodable implemented, toString and empty constructor.
+Dart implementation of the Bincode binary format. Manual BincodeCodable implementation is currently required, providing control but demanding more setup. You can use the Rust to Dart Bincode [Converter](https://github.com/Binurie/rust_to_dart_bincode_converter) for simple Structs. It creates an dart class with BincodeCodable implemented, toString and empty constructor.
 
 ## Features
 
