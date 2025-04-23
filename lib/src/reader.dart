@@ -66,6 +66,8 @@ class BincodeReader implements BincodeReaderBuilder {
   late final ByteData _view;
   int _pos = 0; // read cursor
   final _tmpWriter = BincodeWriter();
+  final Map<Type, int> _fixedSizeCache = {};
+  late int _limit;
 
   /// Wrap an existing byte buffer.
   BincodeReader(this._bytes) {
@@ -74,6 +76,7 @@ class BincodeReader implements BincodeReaderBuilder {
       _bytes.offsetInBytes,
       _bytes.lengthInBytes,
     );
+    _limit = _bytes.lengthInBytes;
   }
 
   /// Checks whether [bytes] can be successfully decoded into the given [instance].
@@ -215,13 +218,46 @@ class BincodeReader implements BincodeReaderBuilder {
   }
 
   void _check(int length, [int? at]) {
-    assert(() {
-      final start = at ?? _pos;
-      if (start < 0 || start + length > _bytes.lengthInBytes) {
-        throw RangeError('Read out of bounds: $length bytes at $start.');
+    final start = at ?? _pos;
+    if (start < 0 || start + length > _limit) {
+      assert(() {
+        throw RangeError(
+            'Read out of bounds: Trying to read $length bytes at $start (limit: $_limit, total: ${_bytes.lengthInBytes}).');
+        // ignore: dead_code
+        return true;
+      }());
+      if (start < 0 || start + length > _limit) {
+        throw RangeError(
+            'Read out of bounds: Trying to read $length bytes at $start (limit: $_limit, total: ${_bytes.lengthInBytes}).');
       }
-      return true;
-    }());
+    }
+  }
+
+  /// Internal helper to get the byte size of a fixed-size object, using a cache.
+  ///
+  /// Checks the `_fixedSizeCache` for the runtime type of the [instance].
+  /// - If found (cache hit), returns the cached size immediately.
+  /// - If not found (cache miss):
+  ///   - Rewinds the internal temporary `_tmpWriter`.
+  ///   - Calls `instance.encode()` on the temporary writer to measure the size.
+  ///   - Stores the measured size in the `_fixedSizeCache` for the type.
+  ///   - Returns the measured size.
+  ///
+  /// This avoids repeatedly encoding objects just to measure their size, significantly
+  /// improving performance for repeated reads of the same fixed-size type.
+  /// Primarily used by `readNestedObjectForFixed` and `readOptionNestedObjectForFixed`.
+  int _getFixedSize<T extends BincodeCodable>(T instance) {
+    final type = instance.runtimeType;
+    final cachedSize = _fixedSizeCache[type];
+    if (cachedSize != null) {
+      return cachedSize;
+    } else {
+      _tmpWriter.rewind();
+      instance.encode(_tmpWriter);
+      final measuredSize = _tmpWriter.getBytesWritten();
+      _fixedSizeCache[type] = measuredSize;
+      return measuredSize;
+    }
   }
 
   // ── Positioning ─────────────────────────────────────────────────────────
@@ -244,7 +280,9 @@ class BincodeReader implements BincodeReaderBuilder {
   int get position => _pos;
   @override
   set position(int v) {
-    _check(0, v);
+    if (v < 0 || v > _limit) {
+      throw RangeError('Cannot set position $v outside bounds [0..$_limit]');
+    }
     _pos = v;
   }
 
@@ -375,7 +413,7 @@ class BincodeReader implements BincodeReaderBuilder {
   /// print('Remaining: ${reader.remainingBytes} bytes');
   /// ```
   @override
-  int get remainingBytes => _bytes.lengthInBytes - _pos;
+  int get remainingBytes => _limit - _pos;
 
   /// Returns true if the current read position is aligned to [alignment] bytes.
   ///
@@ -1772,11 +1810,15 @@ class BincodeReader implements BincodeReaderBuilder {
   /// Reads a fixed-size nested object, assuming its byte size can be calculated ahead of time.
   ///
   /// Internally:
-  /// - Uses a temporary writer to measure the fixed encoded size via `_measureFixedSize()`.
-  /// - Reads an exact number of bytes from the buffer (no length prefix).
-  /// - Constructs a temporary `BincodeReader` over that slice and decodes [instance].
+  /// - Uses a cache to retrieve the object's fixed size. If not cached, measures
+  ///   it by temporarily encoding a sample instance.
+  /// - Checks if enough bytes are available within the current read limit.
+  /// - **Decodes the object directly using the current reader instance** by temporarily
+  ///   restricting the read limit (`_limit`) to the object's exact size.
+  /// - Verifies that the decode consumed the expected number of bytes.
   ///
-  /// This method is for Rust structs where the size is known deterministically (no collections or strings).
+  /// This method is for Rust structs where the size is known deterministically
+  /// (no variable-length collections or strings).
   ///
   /// #### Rust Context Example:
   /// ```rust
@@ -1789,18 +1831,33 @@ class BincodeReader implements BincodeReaderBuilder {
   /// final vec = reader.readNestedObjectForFixed(Vec3());
   /// ```
   ///
-  /// **Layout:** `[fixed bytes]`
+  /// **Layout:** `[fixed bytes]` (no length prefix)
   ///
-  /// **Performance Warning:**
-  /// Calls `encode()` on the instance just to measure size. Avoid in tight loops if performance is critical.
+  /// **Performance:**
+  /// Generally very fast due to avoiding sub-reader allocation. The primary cost
+  /// on the first encounter with a type is measuring its size via `encode()`,
+  /// but subsequent reads of the same type benefit from caching.
   @override
   T readNestedObjectForFixed<T extends BincodeCodable>(T instance) {
-    final toRead = measureFixedSize(instance);
+    final toRead = _getFixedSize(instance);
     _check(toRead);
-    final slice = Uint8List.sublistView(_bytes, _pos, _pos + toRead);
-    _pos += toRead;
-    final sub = BincodeReader(slice);
-    instance.decode(sub);
+
+    final originalLimit = _limit;
+    final nestedLimit = _pos + toRead;
+
+    try {
+      _limit = nestedLimit;
+      instance.decode(this);
+
+      if (_pos != nestedLimit) {
+        final consumed = _pos - (nestedLimit - toRead);
+        _limit = originalLimit;
+        throw BincodeException(
+            'Fixed object decode consumed incorrect number of bytes for type ${instance.runtimeType}. Expected: $toRead, Actual: $consumed. Reader state: pos=$_pos, limit=$_limit');
+      }
+    } finally {
+      _limit = originalLimit;
+    }
     return instance;
   }
 
@@ -1848,12 +1905,12 @@ class BincodeReader implements BincodeReaderBuilder {
   /// Layout: `[u8 tag][fixed object bytes]`
   ///
   /// - If [tag] is `0`, returns `null`.
-  /// - If [tag] is `1`, reads a fixed-size slice and decodes it with a fresh reader.
-  /// - The [creator] function must return a default instance used to calculate size.
-  ///
-  /// **Size Calculation:**
-  /// Calls `encode()` on a sample instance to determine how many bytes to read.
-  /// This is efficient if the type is simple, but may be costly for complex types.
+  /// - If [tag] is `1`:
+  ///   - Uses a cache to retrieve the object's fixed size (measuring on miss).
+  ///   - Checks if enough bytes are available within the current read limit.
+  ///   - **Decodes the object directly using the current reader instance** by temporarily
+  ///     restricting the read limit (`_limit`) to the object's exact size.
+  ///   - Verifies that the decode consumed the expected number of bytes.
   ///
   /// #### Rust Context Example:
   /// ```rust
@@ -1866,8 +1923,9 @@ class BincodeReader implements BincodeReaderBuilder {
   /// final header = reader.readOptionNestedObjectForFixed(() => Header());
   /// ```
   ///
-  /// **Performance Warning:**
-  /// Avoid calling in tight loops for deeply nested types. Pre-measuring size manually is better.
+  /// **Performance:**
+  /// Efficient as it avoids sub-reader allocation when the value is present.
+  /// Size measurement via `encode()` occurs only on the first encounter with the type.
   @override
   T? readOptionNestedObjectForFixed<T extends BincodeCodable>(
       T Function() creator) {
@@ -1876,15 +1934,27 @@ class BincodeReader implements BincodeReaderBuilder {
     if (tag != 1) throw InvalidOptionTagException(tag);
 
     final sample = creator();
-    final toRead = measureFixedSize(sample);
+    final toRead = _getFixedSize(sample);
 
     _check(toRead);
-    final slice = Uint8List.sublistView(_bytes, _pos, _pos + toRead);
-    _pos += toRead;
 
+    final originalLimit = _limit;
+    final nestedLimit = _pos + toRead;
     final inst = creator();
-    final sub = BincodeReader(slice);
-    inst.decode(sub);
+
+    try {
+      _limit = nestedLimit;
+      inst.decode(this);
+
+      if (_pos != nestedLimit) {
+        final consumed = _pos - (nestedLimit - toRead);
+        _limit = originalLimit;
+        throw BincodeException(
+            'Fixed option object decode consumed incorrect number of bytes for type ${inst.runtimeType}. Expected: $toRead, Actual: $consumed. Reader state: pos=$_pos, limit=$_limit');
+      }
+    } finally {
+      _limit = originalLimit;
+    }
     return inst;
   }
 

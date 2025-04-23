@@ -182,6 +182,80 @@ void main() {
     test('Nested Variable-Size Collection read/write', nestedCollectionTest);
     test('List with Optional Elements & Optional List', listOptionalTest);
     test('Empty Buffer Reading', emptyBufferTest);
+    group('BincodeReader Fixed Object Tests', () {
+      test('readNestedObjectForFixed Test', fixedObjectReadTest);
+
+      group('readOptionNestedObjectForFixed', () {
+        test('Some(FixedStruct)', () {
+          final original = TestFixedStruct.create(456, -2.718, false);
+          final writer = BincodeWriter();
+
+          writer.writeOptionNestedValueForFixed(original);
+          final bytesSome = writer.toBytes();
+
+          expect(bytesSome.length, equals(1 + TestFixedStruct.expectedSize));
+
+          final readerSome = BincodeReader(bytesSome);
+          final resultSome =
+              readerSome.readOptionNestedObjectForFixed<TestFixedStruct>(
+                  () => TestFixedStruct());
+
+          expect(resultSome, isNotNull);
+          expect(resultSome, equals(original));
+          expect(readerSome.position, equals(bytesSome.length));
+          expect(readerSome.remainingBytes, equals(0));
+        });
+
+        test('None<FixedStruct>', () {
+          final writer = BincodeWriter();
+
+          writer.writeOptionNestedValueForFixed(null);
+          final bytesNone = writer.toBytes();
+
+          expect(bytesNone.length, equals(1));
+          expect(bytesNone[0], equals(0));
+
+          final readerNone = BincodeReader(bytesNone);
+          final resultNone =
+              readerNone.readOptionNestedObjectForFixed<TestFixedStruct>(
+                  () => TestFixedStruct());
+
+          expect(resultNone, isNull);
+          expect(readerNone.position, equals(bytesNone.length));
+          expect(readerNone.remainingBytes, equals(0));
+        });
+
+        test('Invalid Tag', () {
+          final writer = BincodeWriter();
+          writer.writeU8(2);
+          writer.writeI32(99);
+          final bytesInvalid = writer.toBytes();
+          final readerInvalid = BincodeReader(bytesInvalid);
+          expect(
+            () => readerInvalid.readOptionNestedObjectForFixed<TestFixedStruct>(
+                () => TestFixedStruct()),
+            throwsA(isA<InvalidOptionTagException>()),
+          );
+        });
+
+        test('Insufficient Data after Tag=1', () {
+          final writer = BincodeWriter();
+          writer.writeU8(1);
+          writer.writeI32(123);
+          final bytesPartial = writer.toBytes();
+          final readerPartial = BincodeReader(bytesPartial);
+          expect(
+            () => readerPartial.readOptionNestedObjectForFixed<TestFixedStruct>(
+                () => TestFixedStruct()),
+            throwsA(isA<RangeError>()),
+          );
+        });
+      });
+
+      test('Incorrect Decode Consumption Test', incorrectDecodeConsumptionTest);
+      test('Empty Buffer Reading Test', emptyBufferTest);
+      test('Read Past End of Buffer Test', readPastEndTest);
+    });
   });
 }
 
@@ -2358,4 +2432,160 @@ void emptyBufferTest() {
   expect(() => reader.readU8(), throwsA(isA<RangeError>()));
   expect(() => reader.readU64(), throwsA(isA<RangeError>()));
   expect(() => reader.seek(1), throwsA(isA<RangeError>()));
+}
+
+class TestFixedStruct implements BincodeCodable {
+  int id = 0;
+  double value = 0.0;
+  bool enabled = false;
+
+  static final int expectedSize = 4 + 8 + 1;
+
+  TestFixedStruct();
+  TestFixedStruct.create(this.id, this.value, this.enabled);
+
+  @override
+  void decode(BincodeReader r) {
+    id = r.readI32();
+    value = r.readF64();
+    enabled = r.readBool();
+  }
+
+  @override
+  void encode(BincodeWriter w) {
+    w.writeI32(id);
+    w.writeF64(value);
+    w.writeBool(enabled);
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TestFixedStruct &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          (value - other.value).abs() < 1e-9 &&
+          enabled == other.enabled;
+
+  @override
+  int get hashCode => id.hashCode ^ value.hashCode ^ enabled.hashCode;
+
+  @override
+  String toString() =>
+      'TestFixedStruct(id: $id, value: $value, enabled: $enabled)';
+}
+
+void fixedObjectReadTest() {
+  final original = TestFixedStruct.create(123, 3.14159, true);
+  final writer = BincodeWriter();
+
+  writer.writeNestedValueForFixed(original);
+  final bytes = writer.toBytes();
+
+  expect(bytes.length, equals(TestFixedStruct.expectedSize));
+
+  final reader = BincodeReader(bytes);
+  final decoded = TestFixedStruct();
+  final result = reader.readNestedObjectForFixed<TestFixedStruct>(decoded);
+
+  expect(result, equals(original));
+  expect(identical(result, decoded), isTrue);
+  expect(reader.position, equals(bytes.length));
+  expect(reader.remainingBytes, equals(0));
+}
+
+void incorrectDecodeConsumptionTest() {
+  final badStruct = _BadDecodeStruct.create(10, 20.0);
+  final writer = BincodeWriter();
+  badStruct.encode(writer);
+  final bytes = writer.toBytes();
+
+  final reader = BincodeReader(bytes);
+  final instanceToDecode = _BadDecodeStruct();
+
+  expect(
+    () => reader.readNestedObjectForFixed<_BadDecodeStruct>(instanceToDecode),
+    throwsA(isA<BincodeException>().having((e) => e.message, 'message',
+        contains('consumed incorrect number of bytes'))),
+  );
+
+  expect(reader.position, equals(4));
+}
+
+class _BadDecodeStruct implements BincodeCodable {
+  int id = 0;
+  double value = 0.0;
+
+  _BadDecodeStruct();
+  _BadDecodeStruct.create(this.id, this.value);
+
+  @override
+  void encode(BincodeWriter w) {
+    w.writeI32(id);
+    w.writeF64(value);
+  }
+
+  @override
+  void decode(BincodeReader r) {
+    id = r.readI32();
+  }
+}
+
+void emptyBufferTestTwo() {
+  final bytes = Uint8List(0);
+  final reader = BincodeReader(bytes);
+  final instance = TestFixedStruct();
+
+  expect(() => reader.readU8(), throwsA(isA<RangeError>()));
+  expect(() => reader.readI32(), throwsA(isA<RangeError>()));
+  expect(() => reader.readF64(), throwsA(isA<RangeError>()));
+  expect(() => reader.readBool(), throwsA(isA<RangeError>()));
+
+  expect(
+    () => reader.readNestedObjectForFixed<TestFixedStruct>(instance),
+    throwsA(isA<RangeError>()),
+  );
+
+  expect(
+    () => reader.readOptionNestedObjectForFixed<TestFixedStruct>(
+        () => TestFixedStruct()),
+    throwsA(isA<RangeError>()),
+  );
+
+  expect(reader.position, equals(0));
+  expect(reader.remainingBytes, equals(0));
+}
+
+void readPastEndTest() {
+  final writer = BincodeWriter();
+  writer.writeI32(123);
+  final bytes = writer.toBytes();
+  final reader = BincodeReader(bytes);
+  final instance = TestFixedStruct();
+
+  expect(
+    () => reader.readNestedObjectForFixed<TestFixedStruct>(instance),
+    throwsA(isA<RangeError>()),
+  );
+
+  reader.position = 0;
+
+  final writerOpt = BincodeWriter();
+  writerOpt.writeU8(1);
+  writerOpt.writeI32(456);
+  final bytesOpt = writerOpt.toBytes();
+  final readerOpt = BincodeReader(bytesOpt);
+
+  expect(
+    () => readerOpt.readOptionNestedObjectForFixed<TestFixedStruct>(
+        () => TestFixedStruct()),
+    throwsA(isA<RangeError>()),
+  );
+
+  readerOpt.position = 0;
+
+  expect(readerOpt.readU8(), equals(1));
+  expect(readerOpt.readI32(), equals(456));
+
+  expect(() => readerOpt.readF64(), throwsA(isA<RangeError>()));
 }

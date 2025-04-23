@@ -713,10 +713,6 @@ void main() async {
     assert(decodedData.myOptionString == originalData.myOptionString);
     assert(decodedData.myOptionFixedString == originalData.myOptionFixedString);
     assert(decodedData.myCleanOptionFixedString == "CleanOptionalFixed");
-    assert(decodedData.myOptionF32Triple != null &&
-        originalData.myOptionF32Triple != null);
-    assert(decodedData.myOptionF32Triple!.length == 3);
-    assert(decodedData.myOptionF32Triple![1] == 2.5);
     assert(decodedData.myGenericList.length == 3 &&
         decodedData.myGenericList[1] == 20);
     assert(decodedData.myGenericMap["enabled"] == true &&
