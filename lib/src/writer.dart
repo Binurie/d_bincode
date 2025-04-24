@@ -22,6 +22,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:d_bincode/src/exception/exception.dart';
+
 import 'builder.dart';
 import 'codable.dart';
 
@@ -1571,6 +1573,48 @@ class BincodeWriter implements BincodeWriterBuilder {
     writeU8(value != null ? 1 : 0);
     if (value != null) {
       writeNestedValueForFixed(value);
+    }
+  }
+
+  /// Writes a fixed-size object using `value.encode()`, validating it consumed exactly [knownSize] bytes.
+  ///
+  /// Bypasses length prefixing, similar to [writeNestedValueForFixed].
+  /// Use when the encoded size is known and needs verification during write.
+  /// Throws [BincodeException] if the actual bytes written by `value.encode()` do not match [knownSize].
+  /// Caller MUST ensure [knownSize] is correct. Requires `T` to implement [BincodeEncodable].
+  ///
+  /// Example: `writer.writeNestedObjectWithKnownSize(myStruct, MyStruct.bincodeSize);`
+  @override
+  void writeNestedObjectWithKnownSize(BincodeEncodable value, int knownSize) {
+    if (knownSize < 0) {
+      throw BincodeException("Known size cannot be negative: $knownSize");
+    }
+
+    final startPos = _pos;
+    value.encode(this);
+    final endPos = _pos;
+    final bytesWritten = endPos - startPos;
+
+    if (bytesWritten != knownSize) {
+      throw BincodeException(
+          'Encode for ${value.runtimeType} with knownSize=$knownSize wrote incorrect bytes. Actual: $bytesWritten.');
+    }
+  }
+
+  /// Writes an optional fixed-size object using `value.encode()`, validating size if present.
+  ///
+  /// Writes a `u8` tag (0 for None, 1 for Some). If 1 (Some), calls
+  /// [writeNestedObjectWithKnownSize] to write the object and validate its size.
+  /// Caller MUST ensure [knownSize] is correct for the type of [value].
+  /// Requires `T` to implement [BincodeEncodable].
+  ///
+  /// Example: `writer.writeOptionNestedObjectWithKnownSize(optionalStruct, MyStruct.bincodeSize);`
+  @override
+  void writeOptionNestedObjectWithKnownSize(
+      BincodeEncodable? value, int knownSize) {
+    writeU8(value != null ? 1 : 0);
+    if (value != null) {
+      writeNestedObjectWithKnownSize(value, knownSize);
     }
   }
 

@@ -26,10 +26,17 @@
 /// high performance and compatibility with the Bincode specification found
 /// across other languages (like Rust's `bincode` crate).
 ///
-/// ## Core Components:
-/// - [BincodeWriter]: Serializes Dart types into Bincode bytes.
-/// - [BincodeReader]: Deserializes Bincode bytes back into Dart types.
-/// - [BincodeCodable]: Serialite and Deserialize for both round trips.
+/// ## Core Components & Utilities:
+/// - [BincodeWriter]: Serializes Dart types into Bincode bytes. Offers methods
+///   for various primitive types, strings, collections, optionals, and nested objects.
+/// - [BincodeReader]: Deserializes Bincode bytes back into Dart types, providing
+///   corresponding read methods for all supported types.
+/// - [BincodeCodable], [BincodeEncodable], [BincodeDecodable]: Interfaces for
+///   making custom classes serializable and deserializable.
+/// - [BincodeWriterPool]: Optimizes performance in high-frequency serialization
+///   scenarios by managing reusable [BincodeWriter] instances.
+/// - [BitMask]: A utility class for easily managing up to 8 boolean flags packed
+///   into a single byte (`u8`), useful for status fields or options.
 ///
 /// ## Basic Usage
 ///
@@ -39,12 +46,14 @@
 /// the resulting bytes.
 ///
 /// ```dart
+/// import 'package:d_bincode/d_bincode.dart';
+///
 /// // 1. Implement BincodeCodable
 /// class Point implements BincodeCodable {
 ///   double x, y;
 ///
 ///   Point(this.x, this.y);
-///   Point.empty() : x = 0, y = 0;
+///   Point.empty() : x = 0, y = 0; // Needed for common decoding patterns
 ///
 ///   @override
 ///   void encode(BincodeWriter w) => w..writeF64(x)..writeF64(y);
@@ -54,23 +63,32 @@
 ///     x = r.readF64();
 ///     y = r.readF64();
 ///   }
+///
+///   @override String toString() => 'Point($x, $y)';
 /// }
 ///
-/// // 2. Encode
-/// final writer = BincodeWriter();
-/// Point(1.0, -2.5).encode(writer);
-/// final bytes = writer.toBytes();
+/// void main() {
+///   // 2. Encode
+///   final writer = BincodeWriter();
+///   final originalPoint = Point(1.0, -2.5);
+///   originalPoint.encode(writer);
+///   final bytes = writer.toBytes();
+///   print('Encoded: $bytes');
 ///
-/// // 3. Decode
-/// final decodedPoint = Point.empty()..decode(BincodeReader(bytes));
-/// print('Decoded: (${decodedPoint.x}, ${decodedPoint.y})'); // Output: (1.0, -2.5)
+///   // 3. Decode
+///   final decodedPoint = Point.empty(); // Create instance
+///   decodedPoint.decode(BincodeReader(bytes)); // Populate from bytes
+///   print('Decoded: $decodedPoint'); // Output: Point(1.0, -2.5)
+/// }
 /// ```
 ///
-/// See individual classes and methods for detailed documentation on supported
-/// primitive types, collections (lists, maps), options (nullable types),
-/// fixed-size data, and other features.
+/// See individual classes ([BincodeWriter], [BincodeReader], [BitMask], etc.)
+/// and interface documentation ([BincodeCodable]) for detailed information on
+/// supported types, configuration options, and advanced usage patterns.
 library;
 
+export 'src/bitmask.dart';
 export 'src/codable.dart';
+export 'src/pool.dart';
 export 'src/reader.dart';
 export 'src/writer.dart';

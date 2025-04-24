@@ -34,6 +34,8 @@ Dart implementation of the Bincode binary format. Manual BincodeCodable implemen
     * Support for `IOSink` and file operations (`encodeToSink`, `encodeToFileSync`).
 - **Alignment:** Handles data alignment considerations.
 - **Robustness:** Includes checks for available bytes and validation capabilities.
+* **[BitMask]**: Utility for managing 8 boolean flags packed into a single byte.
+* **[BincodeWriterPool]**: Optimizes high-frequency serialization by reusing `BincodeWriter` instances.
 
 ## Installation
 
@@ -176,6 +178,8 @@ try {
 | `Uint8List`                | `writeUint8List`, `writeBytes`                               | `readUint8List`, `readBytes(len)`, `readRawBytes(len)`                 | Length-prefixed (u64) or raw bytes                |
 | Integer `TypedData`        | `writeInt8List`, `writeUint16List`, `writeInt32List`, etc.   | `readInt8List`, `readUint16List`, `readInt32List`, etc.                | `Vec<Int>`: Length-prefixed (u64) + typed data    |
 | Float `TypedData`          | `writeFloat32List`, `writeFloat64List`                       | `readFloat32List`, `readFloat64List`                                   | `Vec<Float>`: Length-prefixed (u64) + typed data  |
+| `BincodeCodable` (Known)| `writeNestedObjectWithKnownSize(v, sz)` | `readNestedObjectWithKnownSize(i, sz)` | Fixed layout, no prefix. `KnownSize`has better performance when size is known. |
+| `BincodeCodable?` (Known)|`writeOptionNestedObjectWithKnownSize(v, sz)` | `readOptionNestedObjectWithKnownSize(c, sz)`** | `Option<Fixed>`: tag + fixed layout.`KnownSize`has better performance when size is known. |
 | `BincodeCodable` (Nested)  | `writeNestedValueForFixed`, `writeNestedValueForCollection`  | `readNestedObjectForFixed`, `readNestedObjectForCollection`            | Handles nested serializable objects               |
 | `BincodeCodable?` (Nested) | `writeOptionNestedValueForFixed`, `writeOptionNestedValueForCollection` | `readOptionNestedObjectForFixed`, `readOptionNestedObjectForCollection` | Handles optional nested serializable objects    |
 | `int` (enum discriminant)  | `writeEnumDiscriminant(discriminant)`                        | `readEnumDiscriminant()`                                               | Represents enum variant index (u32 - legacy mode) |
@@ -188,6 +192,7 @@ When encoding nested `BincodeCodable` objects, use the `writeNested...` methods.
 
   * `...ForFixed`: Use when the nested object is part of a structure where its size contribution is implicitly handled (like fields within a class).
   * `...ForCollection`: Use when the nested object is part of a dynamic collection (like `List` or `Map`) where its size needs to be explicitly included in the serialization stream.
+  * `...WithKnownSize`: Use for fixed-size objects when the size is known upfront. For reading (`read...WithKnownSize`), this **avoids the overhead of encoding a temporary object just to determine the size**, improving performance compared to `readNestedObjectForFixed`.
 
 <!-- end list -->
 
@@ -253,6 +258,28 @@ class Outer implements BincodeCodable {
   * `BincodeReader.fromBuffer(buffer)`: Create reader from a `ByteBuffer`.
   * `BincodeReader.stripNulls(string)`: Remove trailing null characters.
   * `BincodeReader.peekLength(bytes)`: Read the initial u64 length prefix.
+
+  ### Performance Utilities
+
+* **[BincodeWriterPool]**: For applications performing frequent serialization (e.g. IPC etc.), using a pool can reduce object allocation overhead and GC pressure by reusing `BincodeWriter` instances and their buffers.
+    ```dart
+    final pool = BincodeWriterPool(); // Create a shared pool
+    final bytes = pool.use((writer) { // Use a writer from the pool
+      writer.writeI32(123);
+      return writer.toBytes();
+    });
+    ```
+* **[BitMask]**: A helper class to efficiently manage up to 8 boolean flags stored within a single byte. Useful for status fields, options, etc.
+    ```dart
+    final mask = BitMask();
+    mask.setBit(0, true); // Set first flag
+    mask.setBit(7, true); // Set last flag
+    writer.writeU8(mask.value); // Write the byte (value: 129)
+
+    final readMask = BitMask(reader.readU8());
+    print(readMask.getBit(0)); // true
+    print(readMask.getBit(1)); // false
+    ```
 
 ## Benchmarks
 

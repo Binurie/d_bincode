@@ -1958,39 +1958,78 @@ class BincodeReader implements BincodeReaderBuilder {
     return inst;
   }
 
-  /// Measures the exact number of bytes a fixed-size object would write using `encode()`.
+  /// Reads a fixed-size nested object where the exact byte size is provided by the caller.
+  /// Bypasses the internal size calculation/cache (_getFixedSize).
   ///
-  /// This method is used internally to determine how many bytes to read for a fixed-size struct
-  /// that doesn't include a length prefix (e.g., Rust types with known memory layout).
+  /// Use this when the size of T is known at compile time (e.g., via a static const)
+  /// for potential performance improvement. The caller MUST ensure [knownSize] is correct.
   ///
-  /// - Clears the temporary writer.
-  /// - Calls `encode()` on the [instance].
-  /// - Returns the number of bytes written during encoding.
+  /// Throws if the decode operation does not consume exactly [knownSize] bytes or if
+  /// [knownSize] exceeds the remaining buffer limit.
   ///
-  /// #### Usage Context:
-  /// Used by [readNestedObjectForFixed] and [readOptionNestedObjectForFixed] to calculate
-  /// how many bytes to read from the stream when deserializing fixed-size objects.
-  ///
-  /// #### Rust Context Example:
-  /// ```rust
-  /// #[derive(Serialize, Deserialize)]
-  /// struct Vec3 { x: f32, y: f32, z: f32 } // Always 12 bytes
-  /// ```
-  ///
-  /// #### Dart Example:
+  /// Example:
   /// ```dart
-  /// final reader = BincodeReader(bytes);
-  /// final vec = reader.readNestedObjectForFixed(Vec3());
+  /// final myStruct = reader.readNestedObjectWithKnownSize(MyFixedStruct(), MyFixedStruct.knownSize);
   /// ```
+  @override
+  T readNestedObjectWithKnownSize<T extends BincodeDecodable>(
+      T instance, int knownSize) {
+    if (knownSize < 0) {
+      throw BincodeException("Known size cannot be negative: $knownSize");
+    }
+    _check(knownSize);
+
+    final originalLimit = _limit;
+    final startPos = _pos;
+    final nestedLimit = startPos + knownSize;
+
+    if (nestedLimit > _limit) {
+      throw RangeError(
+          'Known size $knownSize read starting at $startPos would exceed reader limit $_limit');
+    }
+
+    try {
+      _limit = nestedLimit;
+      instance.decode(this);
+
+      if (_pos != nestedLimit) {
+        final consumed = _pos - startPos;
+        _limit = originalLimit;
+        throw BincodeException(
+            'Decode for ${instance.runtimeType} with knownSize=$knownSize consumed incorrect bytes. Actual: $consumed. Final position: $_pos, Expected end: $nestedLimit');
+      }
+    } finally {
+      _limit = originalLimit;
+    }
+    return instance;
+  }
+
+  /// Reads an optional fixed-size nested object where the exact byte size is provided.
+  /// Layout: `[u8 tag][fixed object bytes]`
+  /// Bypasses the internal size calculation/cache (_getFixedSize).
   ///
-  /// **Performance Warning:**
-  /// This method encodes the object just to measure its size.
-  /// Avoid calling frequently in tight loops. If possible, calculate the size once and cache it.
-  @pragma('vm:always-inline')
-  int measureFixedSize<T extends BincodeCodable>(T instance) {
-    _tmpWriter.rewind();
-    instance.encode(_tmpWriter);
-    return _tmpWriter.getBytesWritten();
+  /// The caller MUST ensure [knownSize] is the correct size for type `T`.
+  ///
+  /// Example:
+  /// ```dart
+  /// final myStructOpt = reader.readOptionNestedObjectWithKnownSize(
+  ///   () => MyFixedStruct(),
+  ///   MyFixedStruct.knownSize
+  /// );
+  /// ```
+  @override
+  T? readOptionNestedObjectWithKnownSize<T extends BincodeDecodable>(
+      T Function() creator, int knownSize) {
+    final tag = readU8();
+
+    if (tag == 0) {
+      return null;
+    } else if (tag == 1) {
+      final instance = creator();
+      return readNestedObjectWithKnownSize(instance, knownSize);
+    } else {
+      throw InvalidOptionTagException(tag);
+    }
   }
 
   /// Reads a [Duration] value using the defined format compatible with Rust's `chrono::Duration`.
@@ -2036,5 +2075,44 @@ class BincodeReader implements BincodeReaderBuilder {
   int readEnumDiscriminant() {
     // Format: u32 index
     return readU32();
+  }
+
+  /// Measures the exact number of bytes a fixed-size object would write using `encode()`.
+  ///
+  /// This method is used internally to determine how many bytes to read for a fixed-size struct
+  /// that doesn't include a length prefix (e.g., Rust types with known memory layout).
+  ///
+  /// - Clears the temporary writer.
+  /// - Calls `encode()` on the [instance].
+  /// - Returns the number of bytes written during encoding.
+  ///
+  /// #### Usage Context:
+  /// Used by [readNestedObjectForFixed] and [readOptionNestedObjectForFixed] to calculate
+  /// how many bytes to read from the stream when deserializing fixed-size objects.
+  ///
+  /// #### Rust Context Example:
+  /// ```rust
+  /// #[derive(Serialize, Deserialize)]
+  /// struct Vec3 { x: f32, y: f32, z: f32 } // Always 12 bytes
+  /// ```
+  ///
+  /// #### Dart Example:
+  /// ```dart
+  /// final reader = BincodeReader(bytes);
+  /// final vec = reader.readNestedObjectForFixed(Vec3());
+  /// ```
+  ///
+  /// **Performance Warning:**
+  /// This method encodes the object just to measure its size.
+  /// Avoid calling frequently in tight loops. If possible, calculate the size once and cache it.
+  @pragma('vm:always-inline')
+  @Deprecated(
+      "Superseded by improved internal size handling and '*...WithKnownSize' methods. "
+      "Use 'BincodeReader.readNestedObjectWithKnownSize' or 'BincodeWriter.writeNestedObjectWithKnownSize' "
+      "if explicit size validation is needed. This method may be removed in a future release (e.g., v4.0.0).")
+  int measureFixedSize<T extends BincodeCodable>(T instance) {
+    _tmpWriter.rewind();
+    instance.encode(_tmpWriter);
+    return _tmpWriter.getBytesWritten();
   }
 }

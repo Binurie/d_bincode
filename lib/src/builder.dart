@@ -231,8 +231,7 @@ abstract class BincodeWriterBuilder {
   /// Writes a nested [value] assuming it has a fixed size encoding.
   /// Writes the encoded bytes directly without a length prefix.
   /// Requires [value] to implement `BincodeEncodable`.
-  void writeNestedValueForFixed(
-      BincodeEncodable value); // Changed param type suggestion
+  void writeNestedValueForFixed(BincodeEncodable value);
 
   /// Writes an optional nested [value] assuming variable size encoding (`Option<T>`).
   /// Writes tag + (u64 length + value bytes) if present.
@@ -240,8 +239,28 @@ abstract class BincodeWriterBuilder {
 
   /// Writes an optional nested [value] assuming fixed size encoding (`Option<T>`).
   /// Writes tag + (value bytes) if present.
-  void writeOptionNestedValueForFixed(
-      BincodeEncodable? value); // Changed param type suggestion
+  void writeOptionNestedValueForFixed(BincodeEncodable? value);
+
+  /// Writes a fixed-size object using `value.encode()`, validating it consumed exactly [knownSize] bytes.
+  ///
+  /// Bypasses length prefixing, similar to [writeNestedValueForFixed].
+  /// Use when the encoded size is known and needs verification during write.
+  /// Throws [BincodeException] if the actual bytes written by `value.encode()` do not match [knownSize].
+  /// Caller MUST ensure [knownSize] is correct. Requires `T` to implement [BincodeEncodable].
+  ///
+  /// Example: `writer.writeNestedObjectWithKnownSize(myStruct, MyStruct.bincodeSize);`
+  void writeNestedObjectWithKnownSize(BincodeEncodable value, int knownSize);
+
+  /// Writes an optional fixed-size object using `value.encode()`, validating size if present.
+  ///
+  /// Writes a `u8` tag (0 for None, 1 for Some). If 1 (Some), calls
+  /// [writeNestedObjectWithKnownSize] to write the object and validate its size.
+  /// Caller MUST ensure [knownSize] is correct for the type of [value].
+  /// Requires `T` to implement [BincodeEncodable].
+  ///
+  /// Example: `writer.writeOptionNestedObjectWithKnownSize(optionalStruct, MyStruct.bincodeSize);`
+  void writeOptionNestedObjectWithKnownSize(
+      BincodeEncodable? value, int knownSize);
 
   /// Writes an enum discriminant (variant index) as a `u32`.
   /// The caller is responsible for subsequently writing any payload associated with the variant.
@@ -490,6 +509,28 @@ abstract class BincodeReaderBuilder {
   /// Modifies the passed [instance].
   /// Requires [instance] to implement `BincodeCodable` (needs both encode/decode).
   T readNestedObjectForFixed<T extends BincodeCodable>(T instance);
+
+  /// Reads a fixed-size nested object using an explicitly provided [knownSize].
+  ///
+  /// Bypasses internal size calculation. Reads exactly [knownSize] bytes and calls
+  /// `instance.decode()`. Validates that decode consumed exactly [knownSize].
+  /// Modifies the passed [instance]. Caller MUST ensure [knownSize] is correct.
+  /// Requires `T` to implement [BincodeDecodable].
+  ///
+  /// Example: `reader.readNestedObjectWithKnownSize(MyStruct(), MyStruct.bincodeSize);`
+  T readNestedObjectWithKnownSize<T extends BincodeDecodable>(
+      T instance, int knownSize);
+
+  /// Reads an optional fixed-size nested object using an explicitly provided [knownSize].
+  ///
+  /// Reads a `u8` tag. If 1 (Some), creates an instance via [creator] and decodes
+  /// using [readNestedObjectWithKnownSize] with the provided [knownSize].
+  /// If 0 (None), returns null. Caller MUST ensure [knownSize] is correct for type `T`.
+  /// Requires `T` to implement [BincodeDecodable].
+  ///
+  /// Example: `reader.readOptionNestedObjectWithKnownSize(() => MyStruct(), MyStruct.bincodeSize);`
+  T? readOptionNestedObjectWithKnownSize<T extends BincodeDecodable>(
+      T Function() creator, int knownSize);
 
   /// Reads an optional nested object written with a length prefix.
   /// Reads the tag (u8). If 1, creates an instance using [creator],
