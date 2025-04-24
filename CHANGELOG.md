@@ -66,3 +66,19 @@
 - Support for `Set<T>` via `writeSet`/`readSet`, serializing like `Vec<T>` (u64 length prefix + elements).
 - Support for Rust-style enum discriminants (variant index) via `writeEnumDiscriminant`/`readEnumDiscriminant` (using `u32`) and `writeOptionEnumDiscriminant`/`readOptionEnumDiscriminant`.
 - Support for `Duration` via `writeDuration`/`readDuration` and `writeOptionDuration`/`readOptionDuration`, using a format compatible with Rust's `chrono::Duration` (i64 seconds + u32 nanos).
+
+## 3.2.0
+
+### Added
+
+-   **`BitMask` Utility:** Added class for managing 8 boolean flags packed into a single byte (`u8`). (Note: Bincode sends/receives the underlying `u8`; `BitMask` helps interpret it.)
+-   **`BincodeWriterPool`:** Added class for reusing `BincodeWriter` instances to optimize performance and work with isolates etc.
+-   **Known Size Methods:** Added `read/write...WithKnownSize` and `read/writeOption...WithKnownSize` methods for explicit size handling and validation of fixed-size objects. Improves Read performance.
+
+### Deprecated
+
+-   `BincodeWriter.measureFixedSize`: Superseded by internal reader caching and `...WithKnownSize` methods. Slated for future removal.
+
+### Changed
+
+-   Updated library documentation and README to cover `BitMask`, `Pool`, and `KnownSize` methods/conventions.
