@@ -2,7 +2,7 @@
 
 [![Pub Version](https://img.shields.io/pub/v/d_bincode)](https://pub.dev/packages/d_bincode) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](/LICENSE) 
 
-A Dart implementation of the [Bincode](https://github.com/bincode-org/bincode) binary serialization format. Designed for efficient, compact, and cross-language data serialization, particularly suitable for Inter-Process Communication (IPC) (my last use case), network protocols, and configuration storage where performance and size matter.
+A Dart implementation of the [Bincode](https://github.com/bincode-org/bincode) binary serialization format. Designed for efficient, compact, and cross-language data serialization, particularly suitable for Inter-Process Communication (IPC) (my last use case) and anything else where performance and size matter.
 
 IMPORTANT:
 Currently only fixed int encoding/decoding supported in 2.x of rust bincode.
