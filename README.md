@@ -6,6 +6,8 @@ A Dart implementation of the [Bincode](https://github.com/bincode-org/bincode) b
 
 IMPORTANT:
 Currently only fixed int encoding/decoding supported in 2.x of rust bincode.
+Because fixed int is faster than variable encoding (In future variable encoding will be supported
+via `BincodeVariableWriter` or `BincodeVariableReader` splitted to reduce conditional check overheat.)
 ```rust
 let config = config::standard().with_fixed_int_encoding(); // <<< this is key in 2.x
 ```
